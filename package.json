@@ -4,11 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "idb": "^8.0.3",
+    "jszip": "^3.10.1",
     "next": "16.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
