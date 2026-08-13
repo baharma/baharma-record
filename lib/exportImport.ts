@@ -2,10 +2,10 @@ import JSZip from "jszip";
 import { generateId } from "./id";
 import {
   extensionForMimeType,
-  formatDuration,
   mimeTypeForExtension,
   sanitizeFileName,
 } from "./mediaFormat";
+import { formatTranscriptText } from "./transcriptFormat";
 import type { RecordingEntry, SourceType, TranscriptSegment } from "./types";
 
 interface RecordingMetaJson {
@@ -34,18 +34,11 @@ function metaFromEntry(entry: RecordingEntry, audioFile: string): RecordingMetaJ
   };
 }
 
-function transcriptToText(segments: TranscriptSegment[] | null): string {
-  if (!segments || segments.length === 0) {
-    return "(No transcript available for this recording.)\n";
-  }
-  return (
-    segments
-      .map((segment) => {
-        const label = segment.source ? `[${segment.source === "mic" ? "Mic" : "Tab"}] ` : "";
-        return `[${formatDuration(segment.time)}] ${label}${segment.text}`;
-      })
-      .join("\n") + "\n"
-  );
+function transcriptToText(entry: RecordingEntry): string {
+  const text = formatTranscriptText(entry.transcriptSegments, {
+    editedManually: entry.transcriptEditedManually,
+  });
+  return text.length > 0 ? `${text}\n` : "(No transcript available for this recording.)\n";
 }
 
 function buildZipForEntry(zip: JSZip, entry: RecordingEntry): string {
@@ -53,7 +46,7 @@ function buildZipForEntry(zip: JSZip, entry: RecordingEntry): string {
   const audioFile = `audio.${ext}`;
   zip.file(audioFile, entry.audioBlob);
   zip.file("meta.json", JSON.stringify(metaFromEntry(entry, audioFile), null, 2));
-  zip.file("transcript.txt", transcriptToText(entry.transcriptSegments));
+  zip.file("transcript.txt", transcriptToText(entry));
   return audioFile;
 }
 

@@ -171,6 +171,8 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
                 <p className="mt-0.5 text-xs text-zinc-500">
                   Tab audio and your microphone mixed together into a single recording — one file,
                   {speechSupported ? " with a live transcript." : " no live transcript in this browser."}
+                  {speechSupported &&
+                    " Best results with speakers (not headphones): your mic then hears both sides, so the live transcript covers everything."}
                 </p>
               </button>
             </div>
@@ -192,6 +194,10 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
               {choice === "mic" && 'e.g. "My Notes" or "Podcast Draft".'}
               {choice === "both" &&
                 'e.g. "Client Meeting". Your browser will ask you to pick a tab to share, then for microphone access — both get mixed into one recording.'}
+            </p>
+            <p className="mt-1 text-sm text-zinc-500">
+              {choice === "both" && speechSupported &&
+                "Tip: play the tab through speakers rather than headphones. Your mic then hears the other side too, so the live transcript captures the whole conversation accurately — no separate (and much less accurate) offline pass needed."}
             </p>
             <input
               autoFocus

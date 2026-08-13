@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { decodeAudioTo16kMono } from "@/lib/audioDecode";
+import {
+  decodeAudioTo16kMono,
+  normalizeForSpeech,
+  SILENCE_PEAK_THRESHOLD,
+} from "@/lib/audioDecode";
 import { generateId } from "@/lib/id";
 import type { ModelFileProgress, WorkerRequest, WorkerResponse } from "@/lib/transcription/types";
 import type { TranscriptSegment } from "@/lib/types";
@@ -77,7 +81,20 @@ export function useTranscriber() {
       setError(null);
       setStatus("decoding");
 
-      const audio = await decodeAudioTo16kMono(audioBlob);
+      const decoded = await decodeAudioTo16kMono(audioBlob);
+
+      // Bail out before spinning up the model: Whisper responds to silence by
+      // hallucinating (a word repeated for pages), not by returning nothing.
+      if (decoded.peak <= SILENCE_PEAK_THRESHOLD) {
+        setStatus("idle");
+        throw new Error(
+          "This audio is silent — there's nothing to transcribe. If this is a tab recording, " +
+            'make sure "Share tab audio" was ticked in the browser\'s share dialog (and on macOS, ' +
+            "that Chrome has Screen & System Audio Recording permission).",
+        );
+      }
+
+      const audio = normalizeForSpeech(decoded).samples;
 
       const worker = getWorker();
       const requestId = generateId();

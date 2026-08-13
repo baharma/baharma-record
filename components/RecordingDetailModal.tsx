@@ -113,6 +113,21 @@ export function RecordingDetailModal({
     onAutoTranscribe(recording, language);
   }
 
+  async function removeTabLines() {
+    const remaining = (recording.transcriptSegments ?? []).filter(
+      (segment) => segment.source !== "tab",
+    );
+    snapshotTranscriptForUndo();
+    try {
+      await onUpdate(recording.id, {
+        transcriptSegments: remaining.length > 0 ? remaining : null,
+        transcriptEditedManually: false,
+      });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Failed to remove the tab lines.");
+    }
+  }
+
   async function undoTranscript() {
     if (!previousTranscript) return;
     try {
@@ -239,6 +254,7 @@ export function RecordingDetailModal({
             transcriberProgress={transcriberProgress}
             hasPreviousTranscript={previousTranscript !== null}
             onUndoTranscript={undoTranscript}
+            onRemoveTabLines={removeTabLines}
           />
         </div>
 

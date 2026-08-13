@@ -5,6 +5,7 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from "./types";
+import { stripHallucinatedRepetition } from "./repetition";
 import type { TranscriptSegment } from "@/lib/types";
 
 // The multi-threaded WASM backend needs SharedArrayBuffer, which requires
@@ -33,6 +34,7 @@ interface AsrOutput {
   text: string;
   chunks?: AsrChunk[];
 }
+
 
 let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null;
 
@@ -69,10 +71,15 @@ ctx.onmessage = async (event) => {
       // auto-detect — it silently falls back to English.
       language,
       task: "transcribe",
+      // Curb the runaway-repetition failure mode at generation time. A
+      // 6-gram is long enough that real speech practically never repeats
+      // one verbatim, so this only bites on degenerate loops.
+      no_repeat_ngram_size: 6,
+      repetition_penalty: 1.15,
     })) as AsrOutput | AsrOutput[];
 
     const result = Array.isArray(output) ? output[0] : output;
-    const segments: TranscriptSegment[] = (result.chunks ?? [])
+    const rawSegments: TranscriptSegment[] = (result.chunks ?? [])
       .map(
         (chunk: AsrChunk): TranscriptSegment => ({
           time: chunk.timestamp[0] ?? 0,
@@ -80,6 +87,10 @@ ctx.onmessage = async (event) => {
         }),
       )
       .filter((segment) => segment.text.length > 0);
+
+    // Belt-and-braces: drop anything that still came out degenerate, so a
+    // hallucinated wall of one repeated word never reaches the transcript.
+    const segments = stripHallucinatedRepetition(rawSegments);
 
     ctx.postMessage({ type: "result", requestId, segments });
   } catch (error) {

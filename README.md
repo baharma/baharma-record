@@ -83,6 +83,17 @@ You can serve the `out/` folder with any static file server.
     The isolated tab audio is kept (not discarded) so you can re-run this
     with a different language later if the result isn't right — each run
     replaces only the TAB-labeled lines, leaving the mic side untouched.
+    A "Remove Tab Lines" button deletes them all again if the result is
+    useless, keeping the live MIC transcript intact.
+  - **Which path is most accurate?** The live MIC transcript (Chrome's Web
+    Speech API, server-backed) is markedly more accurate than the offline
+    Whisper pass. The Web Speech API cannot be pointed at tab audio — it
+    only ever listens to the default microphone, and no browser API can
+    change that. So the most accurate setup for a call is to **listen
+    through speakers rather than headphones**: your mic then physically
+    hears the other side too, and the single live transcript covers the
+    whole conversation. "Transcribe Tab Audio" exists for headphone users,
+    and is a quality trade-off, not an upgrade.
 - **Automatic transcription ("Transcribe Audio")**: for any recording
   without a transcript (tab/window recordings, or mic recordings where live
   transcription wasn't available), pick the spoken language from the
@@ -108,6 +119,16 @@ You can serve the `out/` folder with any static file server.
     Swap `WHISPER_MODEL_ID` in `lib/transcription/types.ts` for a larger
     model (e.g. `"Xenova/whisper-base"`) for better accuracy on that kind
     of audio, at the cost of a bigger one-time download.
+  - **Hallucination guards.** Given silence or near-silence, Whisper does
+    not return nothing — it invents text, classically one word repeated for
+    pages ("yang yang yang yang …"). The Whisper heuristics that normally
+    suppress this (`no_speech_threshold`, `compression_ratio_threshold`,
+    `logprob_threshold`) are *not* exposed by transformers.js, so the app
+    adds its own: audio is level-checked before transcribing and rejected
+    up front if silent (with a message pointing at the likely cause), quiet
+    audio is gain-normalized first, generation runs with
+    `no_repeat_ngram_size`/`repetition_penalty`, and any segment that still
+    comes out degenerate is dropped (`lib/transcription/repetition.ts`).
 - **Re-transcribe & Undo**: an auto-generated transcript isn't final — the
   "Transcribe Audio" (or "Transcribe Tab Audio") button stays available
   after a transcript exists, relabeled "Re-transcribe...", so you can pick
@@ -117,7 +138,12 @@ You can serve the `out/` folder with any static file server.
   one level deep, cleared once used or once you make another change.
 - **Copy Transcript**: once a recording has a transcript (live, auto-
   generated, or manual), a "Copy Transcript" button copies the full text to
-  your clipboard.
+  your clipboard — as readable lines carrying the same context the on-screen
+  badges show, e.g. `[0:04] [Mic] halo halo oktavinus`. Consecutive lines
+  from the same side are joined into one utterance so it reads as a
+  conversation rather than a column of fragments. The copied text and the
+  exported `transcript.txt` share one formatter
+  (`lib/transcriptFormat.ts`), so they can't drift apart.
 - **Storage**: recordings (audio blobs, metadata, transcripts) are stored in
   IndexedDB via the `idb` library, entirely inside your browser. Nothing is
   ever sent to a server. Data does **not** sync across browsers or devices —

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriberStatus } from "@/hooks/useTranscriber";
 import { formatDuration } from "@/lib/mediaFormat";
 import { defaultSpeechLanguageCode, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
+import { formatRecordingTranscript } from "@/lib/transcriptFormat";
 import type { ModelFileProgress } from "@/lib/transcription/types";
 import type { RecordingEntry, TranscriptSegment } from "@/lib/types";
 
@@ -19,6 +20,7 @@ interface Props {
   transcriberProgress: ModelFileProgress | null;
   hasPreviousTranscript: boolean;
   onUndoTranscript: () => void;
+  onRemoveTabLines: () => void;
 }
 
 function progressLabel(status: TranscriberStatus, progress: ModelFileProgress | null): string {
@@ -32,13 +34,6 @@ function progressLabel(status: TranscriberStatus, progress: ModelFileProgress | 
   }
   if (status === "transcribing") return "Transcribing audio…";
   return "Working…";
-}
-
-function transcriptToPlainText(recording: RecordingEntry): string {
-  const segments = recording.transcriptSegments;
-  if (!segments || segments.length === 0) return "";
-  if (recording.transcriptEditedManually) return segments[0].text;
-  return segments.map((segment) => segment.text).join(" ");
 }
 
 function sourceBadge(source: TranscriptSegment["source"]) {
@@ -69,6 +64,7 @@ export function TranscriptPanel({
   transcriberProgress,
   hasPreviousTranscript,
   onUndoTranscript,
+  onRemoveTabLines,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -137,7 +133,7 @@ export function TranscriptPanel({
   }
 
   async function copyTranscript() {
-    const text = transcriptToPlainText(recording);
+    const text = formatRecordingTranscript(recording);
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -206,9 +202,20 @@ export function TranscriptPanel({
       )}
       {isMixed && canTranscribeTab && (
         <div className="mb-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-          {tabAlreadyCovered
-            ? "Not happy with the tab transcript? Pick a different language and click “Re-transcribe Tab Audio” to try again."
-            : "The mic side is transcribed below. Use “Transcribe Tab Audio” to also transcribe what was happening in the tab, merged into the same transcript."}
+          {tabAlreadyCovered ? (
+            <p>
+              Tab lines look wrong? They come from the offline Whisper model, which is much less
+              accurate than the live MIC transcript — especially on voice-chat audio. Try a
+              different language and &quot;Re-transcribe Tab Audio&quot;, or remove them entirely.
+            </p>
+          ) : (
+            <p>
+              <strong>Listening through speakers?</strong> Your mic already picks up the tab audio,
+              so the live MIC transcript below is the accurate one — you probably don&apos;t need
+              this. &quot;Transcribe Tab Audio&quot; is for headphone users, and is noticeably less
+              accurate.
+            </p>
+          )}
         </div>
       )}
       {hasSegments && !isMixed && (
@@ -282,6 +289,16 @@ export function TranscriptPanel({
               {transcribeButtonLabel}
             </button>
           </>
+        )}
+        {isMixed && tabAlreadyCovered && !isFreeform && (
+          <button
+            onClick={onRemoveTabLines}
+            disabled={isTranscribing}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            title="Delete every TAB-labelled line, keeping the live MIC transcript"
+          >
+            Remove Tab Lines
+          </button>
         )}
         {hasPreviousTranscript && (
           <button
