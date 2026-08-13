@@ -70,7 +70,19 @@ You can serve the `out/` folder with any static file server.
     a **single** recording (via the Web Audio API — both streams are summed
     into one track before `MediaRecorder` sees them) with a live transcript,
     for e.g. a meeting you're listening to through speakers while talking
-    into your mic. It's one file/library entry, not two.
+    into your mic. It's one file/library entry, not two. The tab audio is
+    *also* recorded in parallel as a separate, isolated (not mixed) track
+    purely so its content can be transcribed later without your mic voice
+    tangled in — see "Transcribe Tab Audio" below.
+  - **Transcribe Tab Audio**: for a "Tab + Mic Simultaneously" recording,
+    once the mic side has been captured live, a **"Transcribe Tab Audio"**
+    button lets you fill in the other side too — it runs Whisper on the
+    isolated tab-only audio (not the mixed track, so mic speech doesn't
+    interfere) and merges the result into the same transcript, sorted by
+    time, each line labeled **MIC** or **TAB** so you can tell them apart.
+    The isolated tab audio is kept (not discarded) so you can re-run this
+    with a different language later if the result isn't right — each run
+    replaces only the TAB-labeled lines, leaving the mic side untouched.
 - **Automatic transcription ("Transcribe Audio")**: for any recording
   without a transcript (tab/window recordings, or mic recordings where live
   transcription wasn't available), pick the spoken language from the
@@ -88,6 +100,21 @@ You can serve the `out/` folder with any static file server.
     falls back to English, which is why non-English audio would otherwise
     come back transcribed as (garbled) English. Pick the language actually
     spoken in the recording before transcribing.
+  - Accuracy depends heavily on audio quality and how many people are
+    talking at once. A solo, clear microphone recording transcribes well;
+    a multi-speaker voice-chat tab recording (Discord, a group call) with
+    background game/notification sounds is much harder for the compact
+    "tiny" model used here and can come out significantly less accurate.
+    Swap `WHISPER_MODEL_ID` in `lib/transcription/types.ts` for a larger
+    model (e.g. `"Xenova/whisper-base"`) for better accuracy on that kind
+    of audio, at the cost of a bigger one-time download.
+- **Re-transcribe & Undo**: an auto-generated transcript isn't final — the
+  "Transcribe Audio" (or "Transcribe Tab Audio") button stays available
+  after a transcript exists, relabeled "Re-transcribe...", so you can pick
+  a different language and try again if the first result was wrong. Right
+  after a transcribe or manual-edit action, an "Undo" button appears to
+  revert to whatever the transcript was immediately before that change —
+  one level deep, cleared once used or once you make another change.
 - **Copy Transcript**: once a recording has a transcript (live, auto-
   generated, or manual), a "Copy Transcript" button copies the full text to
   your clipboard.

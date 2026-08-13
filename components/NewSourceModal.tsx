@@ -107,6 +107,10 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
           stream: destination.stream,
           enableTranscript: speechSupported,
           recognitionLang,
+          // Recorded in parallel (separately from the mix) so "Transcribe
+          // Tab Audio" can later run Whisper on a clean, isolated signal —
+          // see RecordingEntry.secondaryAudioBlob.
+          secondaryStream: tabStream,
           extraCleanup: () => {
             tabStream.getTracks().forEach((track) => track.stop());
             micStream.getTracks().forEach((track) => track.stop());

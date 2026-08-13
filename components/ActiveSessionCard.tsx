@@ -27,6 +27,7 @@ export function ActiveSessionCard({ session, onFinalized, onRemove, onWarning }:
     stream: session.stream,
     enableTranscript: session.enableTranscript,
     recognitionLang: session.recognitionLang,
+    secondaryStream: session.secondaryStream,
     extraCleanup: session.extraCleanup,
     onFinalized: handleFinalized,
     onWarning,

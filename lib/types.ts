@@ -6,10 +6,18 @@ export function sourceTypeLabel(sourceType: SourceType): string {
   return "Microphone";
 }
 
+export type TranscriptSource = "mic" | "tab";
+
 export interface TranscriptSegment {
   /** Seconds elapsed since the start of the recording. */
   time: number;
   text: string;
+  /**
+   * For "mixed" recordings only: which side this segment came from — the
+   * live microphone transcript, or a later Whisper pass over the isolated
+   * tab audio. Segments from other source types leave this unset.
+   */
+  source?: TranscriptSource;
 }
 
 export interface RecordingEntry {
@@ -23,6 +31,14 @@ export interface RecordingEntry {
   transcriptSegments: TranscriptSegment[] | null;
   /** True once the transcript has been overwritten by the user. */
   transcriptEditedManually: boolean;
+  /**
+   * "mixed" recordings only: the isolated tab/window audio, recorded in
+   * parallel with the mixed track purely so "Transcribe Tab Audio" can run
+   * Whisper on a clean signal (not tangled with mic speech) and merge the
+   * result into transcriptSegments. Cleared back to null once used.
+   */
+  secondaryAudioBlob: Blob | null;
+  secondaryAudioMimeType: string | null;
 }
 
 /** A live recording that hasn't been saved to the library yet. */
@@ -34,6 +50,12 @@ export interface PendingSession {
   enableTranscript: boolean;
   /** BCP-47 locale tag for live transcription, e.g. "id-ID" — see lib/speechLanguage.ts. */
   recognitionLang: string;
+  /**
+   * "mixed" sessions only: the isolated tab-only stream, recorded in
+   * parallel (separate MediaRecorder) purely to produce a clean blob for
+   * later tab-side transcription — see RecordingEntry.secondaryAudioBlob.
+   */
+  secondaryStream?: MediaStream;
   /**
    * For "mixed" (tab + mic) sessions: stops the original tab/mic streams
    * and closes the AudioContext used to mix them. `stream` itself is a

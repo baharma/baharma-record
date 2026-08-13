@@ -42,6 +42,14 @@ export function RecordingDetailModal({
   const [labelDraft, setLabelDraft] = useState(recording.label);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Single-level undo for transcript changes: captured right before an
+  // auto-transcribe or manual save overwrites the current transcript, so a
+  // bad result (wrong language, garbled audio) can be rolled back. Cleared
+  // on unmount/switching recordings — not persisted, and only one step deep.
+  const [previousTranscript, setPreviousTranscript] = useState<{
+    segments: RecordingEntry["transcriptSegments"];
+    editedManually: boolean;
+  } | null>(null);
 
   useEffect(() => {
     // Create (and later revoke) the object URL here rather than in a
@@ -81,7 +89,15 @@ export function RecordingDetailModal({
     }
   }
 
+  function snapshotTranscriptForUndo() {
+    setPreviousTranscript({
+      segments: recording.transcriptSegments,
+      editedManually: recording.transcriptEditedManually,
+    });
+  }
+
   async function saveTranscript(segments: TranscriptSegment[]) {
+    snapshotTranscriptForUndo();
     try {
       await onUpdate(recording.id, {
         transcriptSegments: segments.length > 0 ? segments : null,
@@ -89,6 +105,24 @@ export function RecordingDetailModal({
       });
     } catch (error) {
       onError(error instanceof Error ? error.message : "Failed to save transcript.");
+    }
+  }
+
+  function handleAutoTranscribeClick(language: string) {
+    snapshotTranscriptForUndo();
+    onAutoTranscribe(recording, language);
+  }
+
+  async function undoTranscript() {
+    if (!previousTranscript) return;
+    try {
+      await onUpdate(recording.id, {
+        transcriptSegments: previousTranscript.segments,
+        transcriptEditedManually: previousTranscript.editedManually,
+      });
+      setPreviousTranscript(null);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Failed to undo the transcript change.");
     }
   }
 
@@ -198,11 +232,13 @@ export function RecordingDetailModal({
             currentTime={currentTime}
             onSeek={handleSeek}
             onSaveTranscript={saveTranscript}
-            onAutoTranscribe={(language) => onAutoTranscribe(recording, language)}
+            onAutoTranscribe={handleAutoTranscribeClick}
             isTranscribing={isTranscribing}
             transcriberBusyElsewhere={transcriberBusyElsewhere}
             transcriberStatus={transcriberStatus}
             transcriberProgress={transcriberProgress}
+            hasPreviousTranscript={previousTranscript !== null}
+            onUndoTranscript={undoTranscript}
           />
         </div>
 

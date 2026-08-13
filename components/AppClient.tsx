@@ -5,7 +5,7 @@ import { useRecordingsStore } from "@/hooks/useRecordingsStore";
 import { useToasts } from "@/hooks/useToasts";
 import { useTranscriber } from "@/hooks/useTranscriber";
 import { downloadBlob, exportRecordingsToZip, importZipFile } from "@/lib/exportImport";
-import type { PendingSession, RecordingEntry } from "@/lib/types";
+import type { PendingSession, RecordingEntry, TranscriptSegment } from "@/lib/types";
 import { ActiveSessionCard } from "./ActiveSessionCard";
 import { BrowserWarningBanner } from "./BrowserWarningBanner";
 import { LibrarySection } from "./LibrarySection";
@@ -69,14 +69,37 @@ export default function AppClient() {
       if (transcribingId) return;
       setTranscribingId(recording.id);
       try {
-        const segments = await transcriber.transcribe(recording.audioBlob, language);
+        // "mixed" recordings with a secondaryAudioBlob: this is (re-)filling
+        // in the tab side of a combined transcript (the mic side already
+        // came from live Web Speech) — transcribe the isolated tab-only
+        // audio, tag those segments, and merge them into the existing
+        // transcript sorted by time, replacing any previous tab segments
+        // (so re-running with a different language works as a clean redo,
+        // not an accumulation). The secondary audio is kept (not cleared)
+        // so this can be retried again later.
+        const isTabMerge = recording.sourceType === "mixed" && Boolean(recording.secondaryAudioBlob);
+        const audioToTranscribe = isTabMerge ? recording.secondaryAudioBlob! : recording.audioBlob;
+
+        const rawSegments = await transcriber.transcribe(audioToTranscribe, language);
+        const newSegments: TranscriptSegment[] = isTabMerge
+          ? rawSegments.map((segment) => ({ ...segment, source: "tab" as const }))
+          : rawSegments;
+
+        const finalSegments = isTabMerge
+          ? [
+              ...(recording.transcriptSegments ?? []).filter((segment) => segment.source !== "tab"),
+              ...newSegments,
+            ].sort((a, b) => a.time - b.time)
+          : newSegments;
+
         await store.updateRecording(recording.id, {
-          transcriptSegments: segments.length > 0 ? segments : null,
+          transcriptSegments: finalSegments.length > 0 ? finalSegments : null,
           transcriptEditedManually: false,
         });
+
         push(
-          segments.length > 0 ? "success" : "info",
-          segments.length > 0
+          newSegments.length > 0 ? "success" : "info",
+          newSegments.length > 0
             ? `Transcribed "${recording.label}".`
             : `No speech was detected in "${recording.label}".`,
         );

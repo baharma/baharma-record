@@ -40,7 +40,10 @@ function transcriptToText(segments: TranscriptSegment[] | null): string {
   }
   return (
     segments
-      .map((segment) => `[${formatDuration(segment.time)}] ${segment.text}`)
+      .map((segment) => {
+        const label = segment.source ? `[${segment.source === "mic" ? "Mic" : "Tab"}] ` : "";
+        return `[${formatDuration(segment.time)}] ${label}${segment.text}`;
+      })
       .join("\n") + "\n"
   );
 }
@@ -142,6 +145,12 @@ async function parseRecordingFolder(
     audioMimeType: mimeType,
     transcriptSegments: meta.transcript_segments ?? null,
     transcriptEditedManually: Boolean(meta.transcript_edited_manually),
+    // The secondary (isolated tab-only) audio used to fill in a "mixed"
+    // recording's tab-side transcript is a working artifact, not exported —
+    // by the time a recording is exported, that transcription pass has
+    // either already happened or the user chose not to run it.
+    secondaryAudioBlob: null,
+    secondaryAudioMimeType: null,
   };
 }
 

@@ -15,6 +15,8 @@ interface UseRecordingSessionOptions {
   enableTranscript: boolean;
   /** BCP-47 locale tag for live transcription, e.g. "id-ID". */
   recognitionLang: string;
+  /** See PendingSession.secondaryStream — recorded in parallel, separately. */
+  secondaryStream?: MediaStream;
   /** See PendingSession.extraCleanup — invoked alongside stopping `stream`. */
   extraCleanup?: () => void;
   onFinalized: (entry: RecordingEntry) => void;
@@ -27,6 +29,7 @@ export function useRecordingSession({
   stream,
   enableTranscript,
   recognitionLang,
+  secondaryStream,
   extraCleanup,
   onFinalized,
   onWarning,
@@ -38,6 +41,8 @@ export function useRecordingSession({
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const secondaryRecorderRef = useRef<MediaRecorder | null>(null);
+  const secondaryChunksRef = useRef<Blob[]>([]);
   // Actual start time is stamped when the mount effect below runs.
   const startTimeRef = useRef<number>(0);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -46,6 +51,15 @@ export function useRecordingSession({
   const finalizedRef = useRef(false);
   const stoppingRef = useRef(false);
   const shouldRestartRecognitionRef = useRef(false);
+  // MediaRecorder.stop() and SpeechRecognition.stop() both resolve
+  // asynchronously with no guaranteed order. Finalizing as soon as the
+  // recorder stops can race ahead of recognition still delivering the
+  // final words the user just said — those would be silently dropped from
+  // what's saved even though they displayed correctly live. Wait for both
+  // (and the secondary recorder, if any) before finalizing.
+  const recorderStoppedRef = useRef(false);
+  const recognitionEndedRef = useRef(false);
+  const secondaryRecorderStoppedRef = useRef(false);
 
   const finalize = useCallback(() => {
     if (finalizedRef.current) return;
@@ -63,6 +77,12 @@ export function useRecordingSession({
       Math.round((Date.now() - startTimeRef.current) / 1000),
     );
 
+    const secondaryMimeType = secondaryRecorderRef.current?.mimeType || "audio/webm";
+    const secondaryAudioBlob =
+      secondaryStream && secondaryChunksRef.current.length > 0
+        ? new Blob(secondaryChunksRef.current, { type: secondaryMimeType })
+        : null;
+
     const entry: RecordingEntry = {
       id: generateId(),
       label,
@@ -73,11 +93,24 @@ export function useRecordingSession({
       audioMimeType: mimeType,
       transcriptSegments: enableTranscript ? transcriptSegmentsRef.current : null,
       transcriptEditedManually: false,
+      secondaryAudioBlob,
+      secondaryAudioMimeType: secondaryAudioBlob ? secondaryMimeType : null,
     };
 
     setStatus("stopped");
     onFinalized(entry);
-  }, [label, sourceType, enableTranscript, onFinalized]);
+  }, [label, sourceType, enableTranscript, secondaryStream, onFinalized]);
+
+  // Only finalize once a real stop was requested AND every recorder/
+  // recognizer that was actually running has actually finished — never on
+  // the phantom stop() React Strict Mode's dev-only cleanup pass triggers.
+  const tryFinalize = useCallback(() => {
+    if (!stoppingRef.current) return;
+    if (!recorderStoppedRef.current) return;
+    if (!recognitionEndedRef.current) return;
+    if (!secondaryRecorderStoppedRef.current) return;
+    finalize();
+  }, [finalize]);
 
   const stop = useCallback(() => {
     if (stoppingRef.current || finalizedRef.current) return;
@@ -95,18 +128,41 @@ export function useRecordingSession({
     if (recorder && recorder.state !== "inactive") {
       recorder.stop();
     } else {
-      finalize();
+      recorderStoppedRef.current = true;
+    }
+
+    const secondaryRecorder = secondaryRecorderRef.current;
+    if (secondaryRecorder && secondaryRecorder.state !== "inactive") {
+      secondaryRecorder.stop();
+    } else {
+      secondaryRecorderStoppedRef.current = true;
     }
 
     stream.getTracks().forEach((track) => track.stop());
     extraCleanup?.();
-  }, [finalize, stream, extraCleanup]);
+
+    // Safety net: some browsers/edge cases may not reliably fire
+    // recognition.onend after stop() — don't hang forever waiting for it.
+    setTimeout(() => {
+      recorderStoppedRef.current = true;
+      recognitionEndedRef.current = true;
+      secondaryRecorderStoppedRef.current = true;
+      tryFinalize();
+    }, 2000);
+
+    tryFinalize();
+  }, [stream, extraCleanup, tryFinalize]);
 
   useEffect(() => {
     startTimeRef.current = Date.now();
     // Discard any data from a superseded recorder instance (relevant when
     // React Strict Mode's dev-only mount→cleanup→mount runs this twice).
     chunksRef.current = [];
+    secondaryChunksRef.current = [];
+    recorderStoppedRef.current = false;
+    secondaryRecorderStoppedRef.current = !secondaryStream;
+    // Nothing to wait for from recognition unless it actually starts below.
+    recognitionEndedRef.current = !enableTranscript;
 
     const mimeType = pickSupportedMimeType();
     const recorder = new MediaRecorder(
@@ -124,16 +180,41 @@ export function useRecordingSession({
       if (mediaRecorderRef.current !== recorder) return;
       if (event.data.size > 0) chunksRef.current.push(event.data);
     };
-    // Only finalize on a real stop (user action or track-ended), never on
-    // the phantom stop() Strict Mode's cleanup issues in development.
     recorder.onstop = () => {
-      if (stoppingRef.current) finalize();
+      // Guard against a belated event from a superseded recorder instance
+      // (Strict Mode's dev-only double mount) — see the ondataavailable
+      // guard above for why this matters.
+      if (mediaRecorderRef.current !== recorder) return;
+      recorderStoppedRef.current = true;
+      tryFinalize();
     };
     recorder.onerror = () => {
       onWarning("The recorder ran into an error and the session was stopped.");
       stop();
     };
     recorder.start(1000);
+
+    let secondaryRecorder: MediaRecorder | null = null;
+    if (secondaryStream) {
+      const secondaryMimeType = pickSupportedMimeType();
+      secondaryRecorder = new MediaRecorder(
+        secondaryStream,
+        secondaryMimeType ? { mimeType: secondaryMimeType } : undefined,
+      );
+      secondaryRecorderRef.current = secondaryRecorder;
+
+      const currentSecondaryRecorder = secondaryRecorder;
+      secondaryRecorder.ondataavailable = (event) => {
+        if (secondaryRecorderRef.current !== currentSecondaryRecorder) return;
+        if (event.data.size > 0) secondaryChunksRef.current.push(event.data);
+      };
+      secondaryRecorder.onstop = () => {
+        if (secondaryRecorderRef.current !== currentSecondaryRecorder) return;
+        secondaryRecorderStoppedRef.current = true;
+        tryFinalize();
+      };
+      secondaryRecorder.start(1000);
+    }
 
     timerRef.current = setInterval(() => {
       setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000));
@@ -162,7 +243,7 @@ export function useRecordingSession({
               if (trimmed.length > 0) {
                 transcriptSegmentsRef.current = [
                   ...transcriptSegmentsRef.current,
-                  { time, text: trimmed },
+                  { time, text: trimmed, source: "mic" },
                 ];
                 setTranscriptSegments(transcriptSegmentsRef.current);
               }
@@ -185,12 +266,19 @@ export function useRecordingSession({
         };
 
         recognition.onend = () => {
+          // Same stale-instance guard as ondataavailable/onstop above.
+          if (recognitionRef.current !== recognition) return;
           if (shouldRestartRecognitionRef.current) {
             try {
               recognition.start();
             } catch {
               // ignore restart races
             }
+          } else {
+            // Recognition has genuinely finished (real stop, or it died on
+            // its own) — nothing more to wait for before finalizing.
+            recognitionEndedRef.current = true;
+            tryFinalize();
           }
         };
 
@@ -200,11 +288,13 @@ export function useRecordingSession({
           recognitionRef.current = recognition;
         } catch {
           onWarning("Couldn't start live transcription for this recording.");
+          recognitionEndedRef.current = true;
         }
       } else {
         onWarning(
           "Live transcription isn't supported in this browser. This recording will be audio-only.",
         );
+        recognitionEndedRef.current = true;
       }
     }
 
@@ -219,6 +309,9 @@ export function useRecordingSession({
       }
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
+      }
+      if (secondaryRecorderRef.current && secondaryRecorderRef.current.state !== "inactive") {
+        secondaryRecorderRef.current.stop();
       }
       // Deliberately NOT stopping `stream`'s tracks here: the stream is a
       // real hardware capture owned by the caller (acquired once via
