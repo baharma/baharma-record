@@ -80,7 +80,8 @@ export default function AppClient() {
         const isTabMerge = recording.sourceType === "mixed" && Boolean(recording.secondaryAudioBlob);
         const audioToTranscribe = isTabMerge ? recording.secondaryAudioBlob! : recording.audioBlob;
 
-        const rawSegments = await transcriber.transcribe(audioToTranscribe, language);
+        const { segments: rawSegments, speechSeconds, audioSeconds } =
+          await transcriber.transcribe(audioToTranscribe, language);
         const newSegments: TranscriptSegment[] = isTabMerge
           ? rawSegments.map((segment) => ({ ...segment, source: "tab" as const }))
           : rawSegments;
@@ -97,12 +98,35 @@ export default function AppClient() {
           transcriptEditedManually: false,
         });
 
-        push(
-          newSegments.length > 0 ? "success" : "info",
-          newSegments.length > 0
-            ? `Transcribed "${recording.label}".`
-            : `No speech was detected in "${recording.label}".`,
-        );
+        const lastSegmentTime = newSegments.length
+          ? newSegments[newSegments.length - 1].time
+          : 0;
+        const unaccountedSeconds = audioSeconds - lastSegmentTime;
+
+        if (newSegments.length === 0) {
+          push("info", `No speech was detected in "${recording.label}".`);
+        } else if (unaccountedSeconds > 8 && audioSeconds - speechSeconds < 5) {
+          // There was sound right through the clip, yet the model stopped
+          // early — it lost the thread rather than running out of audio.
+          // Music and singing trigger this far more than speech does.
+          push(
+            "info",
+            `Transcribed "${recording.label}", but the model stopped around ` +
+              `${Math.round(lastSegmentTime)}s of ${Math.round(audioSeconds)}s even though there ` +
+              `was sound throughout. Music and singing often defeat the offline model — the live ` +
+              `mic transcript is more reliable, or try a larger model.`,
+          );
+        } else if (audioSeconds - speechSeconds >= 5) {
+          // Explain up front why a transcript can end well before the
+          // recording does — usually the source simply went quiet.
+          push(
+            "success",
+            `Transcribed "${recording.label}". Only ${Math.round(speechSeconds)}s of the ` +
+              `${Math.round(audioSeconds)}s had audible sound, so the transcript ends earlier.`,
+          );
+        } else {
+          push("success", `Transcribed "${recording.label}".`);
+        }
       } catch (error) {
         push(
           "error",

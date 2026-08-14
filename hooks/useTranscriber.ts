@@ -17,8 +17,16 @@ export type TranscriberStatus =
   | "transcribing"
   | "error";
 
+export interface TranscriptionResult {
+  segments: TranscriptSegment[];
+  /** Seconds of the clip that actually contained audible sound. */
+  speechSeconds: number;
+  /** Total length of the clip that was transcribed. */
+  audioSeconds: number;
+}
+
 interface PendingRequest {
-  resolve: (segments: TranscriptSegment[]) => void;
+  resolve: (result: TranscriptionResult) => void;
   reject: (error: Error) => void;
 }
 
@@ -56,7 +64,11 @@ export function useTranscriber() {
         if (message.type === "result") {
           setStatus("idle");
           setProgress(null);
-          pending.resolve(message.segments);
+          pending.resolve({
+            segments: message.segments,
+            speechSeconds: message.speechSeconds,
+            audioSeconds: message.audioSeconds,
+          });
         } else if (message.type === "error") {
           setStatus("error");
           setProgress(null);
@@ -77,7 +89,7 @@ export function useTranscriber() {
   }, []);
 
   const transcribe = useCallback(
-    async (audioBlob: Blob, language: string): Promise<TranscriptSegment[]> => {
+    async (audioBlob: Blob, language: string): Promise<TranscriptionResult> => {
       setError(null);
       setStatus("decoding");
 
@@ -99,7 +111,7 @@ export function useTranscriber() {
       const worker = getWorker();
       const requestId = generateId();
 
-      return new Promise<TranscriptSegment[]>((resolve, reject) => {
+      return new Promise<TranscriptionResult>((resolve, reject) => {
         pendingRequestsRef.current.set(requestId, { resolve, reject });
         const request: WorkerRequest = { type: "transcribe", requestId, audio, language };
         worker.postMessage(request, [audio.buffer]);

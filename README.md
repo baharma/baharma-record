@@ -62,6 +62,14 @@ You can serve the `out/` folder with any static file server.
     produces wrong/garbled text if it doesn't match what's actually spoken,
     so don't rely on the default if your browser's locale doesn't match
     your recording's language.
+    - Chrome ends a speech-recognition session by itself after a stretch of
+      silence, so the app restarts it to keep a long pause from killing the
+      transcript for the rest of the recording. The restart has to happen on
+      a fresh instance a tick later: calling `start()` straight from `onend`
+      throws `InvalidStateError` because the previous session is still
+      tearing down. A failed start is retried with backoff, and only after
+      several failures does it give up — with a visible warning rather than
+      silently going dead.
   - **Tab/window recordings** are audio-only while recording. From the
     recording's detail view, you can either click **"Transcribe Audio"** to
     generate a transcript automatically (see below), or add/edit one
@@ -119,6 +127,31 @@ You can serve the `out/` folder with any static file server.
     Swap `WHISPER_MODEL_ID` in `lib/transcription/types.ts` for a larger
     model (e.g. `"Xenova/whisper-base"`) for better accuracy on that kind
     of audio, at the cost of a bigger one-time download.
+  - **Silence splitting.** Long pauses don't just get skipped by Whisper —
+    they corrupt the whole result. Measured on a generated 80s clip with
+    speech at 5s/40s/70s: the chunked pipeline returned a *single* segment
+    stamped `[0 → 73]` whose text mashed the first two sentences together
+    and dropped the third entirely. That is what makes a transcript appear
+    to jump from, say, `0:07` straight to `0:33`. So before transcribing,
+    the audio is scanned for speech regions
+    (`lib/transcription/speechRegions.ts`); if speech covers less than 70%
+    of the recording, each region is transcribed separately (one at a time —
+    concurrent inference on a single ONNX session isn't safe) and its
+    timestamps offset back onto the real timeline. Continuous speech is
+    detected as such and takes the original single-pass path unchanged.
+    A recording that is one burst of speech followed by a long quiet tail
+    counts too: it gets trimmed to the speech rather than handing the model
+    all that silence.
+  - **Why a transcript can end before the recording does.** Whisper only
+    emits lines where it hears speech, so a transcript legitimately stops
+    early when the source went quiet — which is indistinguishable, from the
+    outside, from the app losing content. To remove the guesswork, when the
+    audible portion is more than 5s shorter than the clip the success
+    message says so outright ("Only 22s of the 39s had audible sound, so the
+    transcript ends earlier"). The opposite case — sound right through the
+    clip but the model stopping early anyway, which is what music and singing
+    tend to do — is called out separately, since it means the model lost the
+    thread rather than running out of audio.
   - **Hallucination guards.** Given silence or near-silence, Whisper does
     not return nothing — it invents text, classically one word repeated for
     pages ("yang yang yang yang …"). The Whisper heuristics that normally

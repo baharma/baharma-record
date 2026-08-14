@@ -31,5 +31,13 @@ export type WorkerRequest = {
 export type WorkerResponse =
   | { type: "status"; requestId: string; phase: "loading-model" | "transcribing" }
   | { type: "progress"; requestId: string; progress: ModelFileProgress }
-  | { type: "result"; requestId: string; segments: TranscriptSegment[] }
+  | {
+      type: "result";
+      requestId: string;
+      segments: TranscriptSegment[];
+      /** Seconds of the clip that actually contained audible sound. */
+      speechSeconds: number;
+      /** Total length of the clip that was transcribed. */
+      audioSeconds: number;
+    }
   | { type: "error"; requestId: string; message: string };

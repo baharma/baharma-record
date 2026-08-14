@@ -46,6 +46,8 @@ export function useRecordingSession({
   // Actual start time is stamped when the mount effect below runs.
   const startTimeRef = useRef<number>(0);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  /** Pending restart of live transcription after Chrome ended a session. */
+  const recognitionRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptSegmentsRef = useRef<TranscriptSegment[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const finalizedRef = useRef(false);
@@ -118,6 +120,10 @@ export function useRecordingSession({
     shouldRestartRecognitionRef.current = false;
     setStatus("stopping");
 
+    if (recognitionRestartTimerRef.current !== null) {
+      clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
+    }
     try {
       recognitionRef.current?.stop();
     } catch {
@@ -227,69 +233,99 @@ export function useRecordingSession({
     if (enableTranscript) {
       const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
       if (SpeechRecognitionCtor) {
-        const recognition = new SpeechRecognitionCtor();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = recognitionLang;
+        // Chrome ends a SpeechRecognition session on its own after a stretch
+        // of silence (and periodically regardless). Keeping live transcription
+        // alive across a long pause therefore means restarting it — but
+        // calling start() synchronously from onend throws InvalidStateError,
+        // because the old session hasn't finished tearing down yet. So each
+        // restart gets a fresh instance on a short delay, and a start() that
+        // still fails is retried with backoff rather than silently giving up
+        // (which used to kill the transcript for the rest of the recording).
+        let startFailures = 0;
 
-        recognition.onresult = (event: SpeechRecognitionEvent) => {
-          let interim = "";
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            const result = event.results[i];
-            const text = result[0]?.transcript ?? "";
-            if (result.isFinal) {
-              const time = (Date.now() - startTimeRef.current) / 1000;
-              const trimmed = text.trim();
-              if (trimmed.length > 0) {
-                transcriptSegmentsRef.current = [
-                  ...transcriptSegmentsRef.current,
-                  { time, text: trimmed, source: "mic" },
-                ];
-                setTranscriptSegments(transcriptSegmentsRef.current);
+        const launchRecognition = () => {
+          if (!shouldRestartRecognitionRef.current) return;
+
+          const recognition = new SpeechRecognitionCtor();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = recognitionLang;
+
+          recognition.onresult = (event: SpeechRecognitionEvent) => {
+            let interim = "";
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              const result = event.results[i];
+              const text = result[0]?.transcript ?? "";
+              if (result.isFinal) {
+                const time = (Date.now() - startTimeRef.current) / 1000;
+                const trimmed = text.trim();
+                if (trimmed.length > 0) {
+                  transcriptSegmentsRef.current = [
+                    ...transcriptSegmentsRef.current,
+                    { time, text: trimmed, source: "mic" },
+                  ];
+                  setTranscriptSegments(transcriptSegmentsRef.current);
+                }
+              } else {
+                interim += text;
               }
+            }
+            setInterimText(interim);
+          };
+
+          recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+            // "no-speech" is the normal outcome of a pause, and "aborted"
+            // happens on restart — neither is fatal, onend restarts us.
+            if (event.error === "no-speech" || event.error === "aborted") return;
+            if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+              shouldRestartRecognitionRef.current = false;
+              onWarning(
+                "Microphone permission for live transcription was denied. Recording will continue as audio-only.",
+              );
+              return;
+            }
+          };
+
+          recognition.onend = () => {
+            // Same stale-instance guard as ondataavailable/onstop above.
+            if (recognitionRef.current !== recognition) return;
+            if (shouldRestartRecognitionRef.current) {
+              // Don't restart from inside onend — the session is still
+              // tearing down and start() would throw. A fresh instance on
+              // the next tick is what survives long pauses.
+              recognitionRestartTimerRef.current = setTimeout(launchRecognition, 250);
             } else {
-              interim += text;
+              // Recognition has genuinely finished (real stop, or it died on
+              // its own) — nothing more to wait for before finalizing.
+              recognitionEndedRef.current = true;
+              tryFinalize();
+            }
+          };
+
+          try {
+            recognition.start();
+            recognitionRef.current = recognition;
+            startFailures = 0;
+          } catch {
+            startFailures += 1;
+            if (startFailures <= 5) {
+              recognitionRestartTimerRef.current = setTimeout(
+                launchRecognition,
+                250 * startFailures,
+              );
+            } else {
+              shouldRestartRecognitionRef.current = false;
+              onWarning(
+                "Live transcription stopped and couldn't be restarted. The rest of this recording will be audio-only — you can still transcribe it afterwards.",
+              );
+              recognitionEndedRef.current = true;
+              tryFinalize();
             }
           }
-          setInterimText(interim);
         };
 
-        recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-          if (event.error === "no-speech" || event.error === "aborted") return;
-          if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-            shouldRestartRecognitionRef.current = false;
-            onWarning(
-              "Microphone permission for live transcription was denied. Recording will continue as audio-only.",
-            );
-            return;
-          }
-        };
-
-        recognition.onend = () => {
-          // Same stale-instance guard as ondataavailable/onstop above.
-          if (recognitionRef.current !== recognition) return;
-          if (shouldRestartRecognitionRef.current) {
-            try {
-              recognition.start();
-            } catch {
-              // ignore restart races
-            }
-          } else {
-            // Recognition has genuinely finished (real stop, or it died on
-            // its own) — nothing more to wait for before finalizing.
-            recognitionEndedRef.current = true;
-            tryFinalize();
-          }
-        };
-
-        try {
-          shouldRestartRecognitionRef.current = true;
-          recognition.start();
-          recognitionRef.current = recognition;
-        } catch {
-          onWarning("Couldn't start live transcription for this recording.");
-          recognitionEndedRef.current = true;
-        }
+        shouldRestartRecognitionRef.current = true;
+        launchRecognition();
       } else {
         onWarning(
           "Live transcription isn't supported in this browser. This recording will be audio-only.",
@@ -302,6 +338,10 @@ export function useRecordingSession({
       audioTrack?.removeEventListener("ended", handleTrackEnded);
       shouldRestartRecognitionRef.current = false;
       if (timerRef.current !== null) clearInterval(timerRef.current);
+      if (recognitionRestartTimerRef.current !== null) {
+        clearTimeout(recognitionRestartTimerRef.current);
+        recognitionRestartTimerRef.current = null;
+      }
       try {
         recognitionRef.current?.stop();
       } catch {

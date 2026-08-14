@@ -147,7 +147,7 @@ export function TranscriptPanel({
 
   if (editing) {
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <textarea
           autoFocus
           value={draft}
@@ -176,7 +176,7 @@ export function TranscriptPanel({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {!hasSegments && (
         <div className="mb-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
           {recording.sourceType === "tab" ? (
@@ -231,7 +231,10 @@ export function TranscriptPanel({
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto pr-1">
+      {/* min-h-0 is load-bearing: a flex item defaults to min-height:auto, so
+          without it this grows to fit the transcript instead of scrolling —
+          shoving the action buttons below the bottom of the modal. */}
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {!hasSegments ? (
           <p className="text-sm italic text-zinc-400">No transcript text yet.</p>
         ) : isFreeform ? (
@@ -260,7 +263,7 @@ export function TranscriptPanel({
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2">
         {showTranscribeControls && (
           <>
             <select

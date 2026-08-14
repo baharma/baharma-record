@@ -241,7 +241,11 @@ export function RecordingDetailModal({
           )}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-hidden p-4">
+        {/* A flex column, not a plain block: the panel inside sizes itself
+            with flex-1, because height:100% doesn't resolve against a parent
+            whose own height comes from flex layout rather than an explicit
+            value — which silently let the transcript grow past the modal. */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
           <TranscriptPanel
             recording={recording}
             currentTime={currentTime}

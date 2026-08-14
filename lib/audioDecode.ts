@@ -1,4 +1,4 @@
-const WHISPER_SAMPLE_RATE = 16000;
+export const WHISPER_SAMPLE_RATE = 16000;
 
 /**
  * Peak amplitude (0..1) below which audio is treated as having no audible
