@@ -5,7 +5,12 @@ import type { TranscriberStatus } from "@/hooks/useTranscriber";
 import { formatDuration } from "@/lib/mediaFormat";
 import { defaultSpeechLanguageCode, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
 import { formatRecordingTranscript } from "@/lib/transcriptFormat";
-import type { ModelFileProgress } from "@/lib/transcription/types";
+import {
+  DEFAULT_WHISPER_MODEL_ID,
+  WHISPER_MODELS,
+  type ModelFileProgress,
+  type TranscribeProgress,
+} from "@/lib/transcription/types";
 import type { RecordingEntry, TranscriptSegment } from "@/lib/types";
 
 interface Props {
@@ -13,17 +18,24 @@ interface Props {
   currentTime: number;
   onSeek: (time: number) => void;
   onSaveTranscript: (segments: TranscriptSegment[]) => Promise<void> | void;
-  onAutoTranscribe: (language: string) => void;
+  onAutoTranscribe: (language: string, modelId: string) => void;
   isTranscribing: boolean;
   transcriberBusyElsewhere: boolean;
   transcriberStatus: TranscriberStatus;
   transcriberProgress: ModelFileProgress | null;
+  transcriberTranscribeProgress: TranscribeProgress | null;
   hasPreviousTranscript: boolean;
   onUndoTranscript: () => void;
   onRemoveTabLines: () => void;
 }
 
-function progressLabel(status: TranscriberStatus, progress: ModelFileProgress | null): string {
+const MODEL_STORAGE_KEY = "baharma-record:whisper-model";
+
+function progressLabel(
+  status: TranscriberStatus,
+  progress: ModelFileProgress | null,
+  transcribeProgress: TranscribeProgress | null,
+): string {
   if (status === "decoding") return "Preparing audio…";
   if (status === "loading-model") {
     if (progress?.file && typeof progress.loaded === "number" && typeof progress.total === "number" && progress.total > 0) {
@@ -32,7 +44,17 @@ function progressLabel(status: TranscriberStatus, progress: ModelFileProgress | 
     }
     return "Downloading speech-to-text model… (first use only, then cached for offline use)";
   }
-  if (status === "transcribing") return "Transcribing audio…";
+  if (status === "transcribing") {
+    if (transcribeProgress && transcribeProgress.totalSeconds > 0) {
+      const { processedSeconds, totalSeconds, phase } = transcribeProgress;
+      const percent = Math.round((processedSeconds / totalSeconds) * 100);
+      const done = `${formatDuration(processedSeconds)} / ${formatDuration(totalSeconds)} (${percent}%)`;
+      return phase === "recovering"
+        ? `Re-checking stretches the model skipped… ${done}`
+        : `Transcribing audio… ${done}`;
+    }
+    return "Transcribing audio…";
+  }
   return "Working…";
 }
 
@@ -62,6 +84,7 @@ export function TranscriptPanel({
   transcriberBusyElsewhere,
   transcriberStatus,
   transcriberProgress,
+  transcriberTranscribeProgress,
   hasPreviousTranscript,
   onUndoTranscript,
   onRemoveTabLines,
@@ -70,6 +93,13 @@ export function TranscriptPanel({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [language, setLanguage] = useState(() => defaultSpeechLanguageCode());
+  // Remembered across recordings: re-picking a model before every run is
+  // needless friction, and the choice is a standing preference (speed vs
+  // accuracy) rather than a per-recording one.
+  const [modelId, setModelId] = useState(() => {
+    const saved = typeof localStorage === "undefined" ? null : localStorage.getItem(MODEL_STORAGE_KEY);
+    return WHISPER_MODELS.some((model) => model.id === saved) ? saved! : DEFAULT_WHISPER_MODEL_ID;
+  });
   const [copied, setCopied] = useState(false);
   const activeRef = useRef<HTMLButtonElement | null>(null);
 
@@ -227,7 +257,7 @@ export function TranscriptPanel({
 
       {isTranscribing && (
         <div className="mb-3 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">
-          {progressLabel(transcriberStatus, transcriberProgress)}
+          {progressLabel(transcriberStatus, transcriberProgress, transcriberTranscribeProgress)}
         </div>
       )}
 
@@ -279,8 +309,29 @@ export function TranscriptPanel({
                 </option>
               ))}
             </select>
+            <select
+              value={modelId}
+              onChange={(event) => {
+                setModelId(event.target.value);
+                try {
+                  localStorage.setItem(MODEL_STORAGE_KEY, event.target.value);
+                } catch {
+                  // Storage can be unavailable/blocked — the choice just
+                  // won't stick, which is not worth interrupting the user for.
+                }
+              }}
+              disabled={isTranscribing || transcriberBusyElsewhere}
+              className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
+              title="Bigger models are more accurate but download slower and take longer to run"
+            >
+              {WHISPER_MODELS.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label} ({model.sizeLabel})
+                </option>
+              ))}
+            </select>
             <button
-              onClick={() => onAutoTranscribe(language)}
+              onClick={() => onAutoTranscribe(language, modelId)}
               disabled={isTranscribing || transcriberBusyElsewhere}
               className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
               title={

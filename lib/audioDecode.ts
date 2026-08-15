@@ -53,42 +53,61 @@ export function normalizeForSpeech(audio: DecodedAudio): DecodedAudio {
 }
 
 /**
+ * Averages an AudioBuffer's channels down to one Float32Array. Always a
+ * standalone copy, never a view onto the AudioBuffer: the caller transfers
+ * this array's ArrayBuffer to the worker, which would otherwise detach
+ * storage the AudioBuffer still owns. Copying also lets the AudioBuffer be
+ * collected instead of being pinned for the whole transcription.
+ */
+function downmixToMono(buffer: AudioBuffer): Float32Array {
+  if (buffer.numberOfChannels === 1) return new Float32Array(buffer.getChannelData(0));
+
+  const mono = new Float32Array(buffer.length);
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    const data = buffer.getChannelData(channel);
+    for (let i = 0; i < mono.length; i++) mono[i] += data[i];
+  }
+  const scale = 1 / buffer.numberOfChannels;
+  for (let i = 0; i < mono.length; i++) mono[i] *= scale;
+  return mono;
+}
+
+/**
  * Decodes an audio Blob into mono PCM samples at 16kHz — the input format
  * Whisper models expect. Runs entirely client-side via the Web Audio API.
+ *
+ * Decoding happens *into* a 16kHz context on purpose: decodeAudioData
+ * resamples to the context's rate, so the samples never expand to the file's
+ * native rate first. That matters at the lengths this app records — measured
+ * on 10min/48kHz/stereo, the buffer goes from 220MB to 73MB (3x), which over
+ * an hour is the difference between ~1.3GB and ~440MB — and it removes the
+ * separate OfflineAudioContext resample pass (and its own full-size buffer)
+ * entirely.
  */
 export async function decodeAudioTo16kMono(blob: Blob): Promise<DecodedAudio> {
   const arrayBuffer = await blob.arrayBuffer();
-  const AudioContextCtor =
-    window.AudioContext ||
-    (window as typeof window & { webkitAudioContext?: typeof AudioContext })
-      .webkitAudioContext;
-  if (!AudioContextCtor) {
+  const OfflineAudioContextCtor =
+    window.OfflineAudioContext ||
+    (window as typeof window & { webkitOfflineAudioContext?: typeof OfflineAudioContext })
+      .webkitOfflineAudioContext;
+  if (!OfflineAudioContextCtor) {
     throw new Error("Web Audio API is not supported in this browser.");
   }
 
-  const audioContext = new AudioContextCtor();
+  // Length/channels here only describe this context's (unused) render target
+  // — decodeAudioData returns a buffer sized by the source audio.
+  const context = new OfflineAudioContextCtor(1, 1, WHISPER_SAMPLE_RATE);
   let decoded: AudioBuffer;
   try {
-    decoded = await audioContext.decodeAudioData(arrayBuffer);
-  } finally {
-    await audioContext.close();
+    decoded = await context.decodeAudioData(arrayBuffer);
+  } catch (error) {
+    throw new Error(
+      "This recording couldn't be decoded for transcription. Very long recordings can " +
+        "exhaust available memory — try transcribing a shorter recording. " +
+        `(${error instanceof Error ? error.message : String(error)})`,
+    );
   }
 
-  if (decoded.sampleRate === WHISPER_SAMPLE_RATE && decoded.numberOfChannels === 1) {
-    const samples = decoded.getChannelData(0);
-    return { samples, ...measureLevels(samples) };
-  }
-
-  const offlineContext = new OfflineAudioContext(
-    1,
-    Math.ceil(decoded.duration * WHISPER_SAMPLE_RATE),
-    WHISPER_SAMPLE_RATE,
-  );
-  const source = offlineContext.createBufferSource();
-  source.buffer = decoded;
-  source.connect(offlineContext.destination);
-  source.start();
-  const resampled = await offlineContext.startRendering();
-  const samples = resampled.getChannelData(0);
+  const samples = downmixToMono(decoded);
   return { samples, ...measureLevels(samples) };
 }

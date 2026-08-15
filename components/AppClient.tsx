@@ -62,7 +62,7 @@ export default function AppClient() {
   );
 
   const handleAutoTranscribe = useCallback(
-    async (recording: RecordingEntry, language: string) => {
+    async (recording: RecordingEntry, language: string, modelId: string) => {
       if (transcribingId) return;
       setTranscribingId(recording.id);
       try {
@@ -78,7 +78,7 @@ export default function AppClient() {
         const audioToTranscribe = isTabMerge ? recording.secondaryAudioBlob! : recording.audioBlob;
 
         const { segments: rawSegments, speechSeconds, audioSeconds } =
-          await transcriber.transcribe(audioToTranscribe, language);
+          await transcriber.transcribe(audioToTranscribe, language, modelId);
         const newSegments: TranscriptSegment[] = isTabMerge
           ? rawSegments.map((segment) => ({ ...segment, source: "tab" as const }))
           : rawSegments;
@@ -232,6 +232,7 @@ export default function AppClient() {
           transcriberBusyElsewhere={transcribingId !== null && transcribingId !== selected.id}
           transcriberStatus={transcriber.status}
           transcriberProgress={transcriber.progress}
+          transcriberTranscribeProgress={transcriber.transcribeProgress}
         />
       )}
 

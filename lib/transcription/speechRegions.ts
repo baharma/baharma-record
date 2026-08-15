@@ -96,6 +96,49 @@ export function totalRegionSamples(regions: SpeechRegion[]): number {
 }
 
 /**
+ * Seconds of the clip carrying audible sound, measured against the absolute
+ * floor. Used for "how much of this recording actually had sound" reporting,
+ * where the region-based figure would mislead: uniform music yields zero
+ * regions (see findNextAudibleSample), which would otherwise be reported as
+ * "0s of 25s had audible sound".
+ */
+export function totalAudibleSeconds(samples: Float32Array, sampleRate: number): number {
+  const windowSize = Math.max(1, Math.round(WINDOW_SECONDS * sampleRate));
+  let audibleSamples = 0;
+  for (let i = 0; i < samples.length; i += windowSize) {
+    const end = Math.min(samples.length, i + windowSize);
+    if (windowRms(samples, i, end) > ABSOLUTE_FLOOR) audibleSamples += end - i;
+  }
+  return audibleSamples / sampleRate;
+}
+
+/**
+ * First sample at or after `fromSample` that carries audible sound, or null
+ * if the rest of the clip is silent.
+ *
+ * Deliberately measured against ABSOLUTE_FLOOR alone rather than the
+ * noise-floor-relative threshold findSpeechRegions uses. That relative
+ * threshold is derived from the clip's own quietest windows, so on a clip
+ * with loud passages (music especially) it rises high enough to classify
+ * real, audible audio as silence — measured: uniform music yields *zero*
+ * regions, and a loud clip with a quieter tail drops the tail entirely.
+ * Resuming transcription must not inherit that blind spot.
+ */
+export function findNextAudibleSample(
+  samples: Float32Array,
+  sampleRate: number,
+  fromSample: number,
+): number | null {
+  const windowSize = Math.max(1, Math.round(WINDOW_SECONDS * sampleRate));
+  const start = Math.max(0, fromSample);
+  for (let i = start; i < samples.length; i += windowSize) {
+    const end = Math.min(samples.length, i + windowSize);
+    if (windowRms(samples, i, end) > ABSOLUTE_FLOOR) return i;
+  }
+  return null;
+}
+
+/**
  * True when the recording is sparse enough that per-region transcription is
  * worth it. Continuous speech is left on the plain chunked path.
  */

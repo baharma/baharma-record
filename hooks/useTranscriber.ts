@@ -7,7 +7,12 @@ import {
   SILENCE_PEAK_THRESHOLD,
 } from "@/lib/audioDecode";
 import { generateId } from "@/lib/id";
-import type { ModelFileProgress, WorkerRequest, WorkerResponse } from "@/lib/transcription/types";
+import type {
+  ModelFileProgress,
+  TranscribeProgress,
+  WorkerRequest,
+  WorkerResponse,
+} from "@/lib/transcription/types";
 import type { TranscriptSegment } from "@/lib/types";
 
 export type TranscriberStatus =
@@ -33,6 +38,7 @@ interface PendingRequest {
 export function useTranscriber() {
   const [status, setStatus] = useState<TranscriberStatus>("idle");
   const [progress, setProgress] = useState<ModelFileProgress | null>(null);
+  const [transcribeProgress, setTranscribeProgress] = useState<TranscribeProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
@@ -56,6 +62,10 @@ export function useTranscriber() {
           setProgress(message.progress);
           return;
         }
+        if (message.type === "transcribe-progress") {
+          setTranscribeProgress(message.progress);
+          return;
+        }
 
         const pending = pendingRequestsRef.current.get(message.requestId);
         if (!pending) return;
@@ -64,6 +74,7 @@ export function useTranscriber() {
         if (message.type === "result") {
           setStatus("idle");
           setProgress(null);
+          setTranscribeProgress(null);
           pending.resolve({
             segments: message.segments,
             speechSeconds: message.speechSeconds,
@@ -72,6 +83,7 @@ export function useTranscriber() {
         } else if (message.type === "error") {
           setStatus("error");
           setProgress(null);
+          setTranscribeProgress(null);
           setError(message.message);
           pending.reject(new Error(message.message));
         }
@@ -89,8 +101,13 @@ export function useTranscriber() {
   }, []);
 
   const transcribe = useCallback(
-    async (audioBlob: Blob, language: string): Promise<TranscriptionResult> => {
+    async (
+      audioBlob: Blob,
+      language: string,
+      modelId: string,
+    ): Promise<TranscriptionResult> => {
       setError(null);
+      setTranscribeProgress(null);
       setStatus("decoding");
 
       const decoded = await decodeAudioTo16kMono(audioBlob);
@@ -113,14 +130,20 @@ export function useTranscriber() {
 
       return new Promise<TranscriptionResult>((resolve, reject) => {
         pendingRequestsRef.current.set(requestId, { resolve, reject });
-        const request: WorkerRequest = { type: "transcribe", requestId, audio, language };
+        const request: WorkerRequest = {
+          type: "transcribe",
+          requestId,
+          audio,
+          language,
+          modelId,
+        };
         worker.postMessage(request, [audio.buffer]);
       });
     },
     [getWorker],
   );
 
-  return { transcribe, status, progress, error };
+  return { transcribe, status, progress, transcribeProgress, error };
 }
 
 export type Transcriber = ReturnType<typeof useTranscriber>;

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { TranscriberStatus } from "@/hooks/useTranscriber";
 import { downloadBlob, exportRecordingToZip } from "@/lib/exportImport";
 import { formatDateTime, formatDuration, sanitizeFileName } from "@/lib/mediaFormat";
-import type { ModelFileProgress } from "@/lib/transcription/types";
+import type { ModelFileProgress, TranscribeProgress } from "@/lib/transcription/types";
 import { sourceTypeLabel, type RecordingEntry, type TranscriptSegment } from "@/lib/types";
 import { TranscriptPanel } from "./TranscriptPanel";
 
@@ -14,11 +14,12 @@ interface Props {
   onDelete: (id: string) => Promise<void>;
   onUpdate: (id: string, patch: Partial<RecordingEntry>) => Promise<void>;
   onError: (message: string) => void;
-  onAutoTranscribe: (recording: RecordingEntry, language: string) => void;
+  onAutoTranscribe: (recording: RecordingEntry, language: string, modelId: string) => void;
   isTranscribing: boolean;
   transcriberBusyElsewhere: boolean;
   transcriberStatus: TranscriberStatus;
   transcriberProgress: ModelFileProgress | null;
+  transcriberTranscribeProgress: TranscribeProgress | null;
 }
 
 export function RecordingDetailModal({
@@ -32,6 +33,7 @@ export function RecordingDetailModal({
   transcriberBusyElsewhere,
   transcriberStatus,
   transcriberProgress,
+  transcriberTranscribeProgress,
 }: Props) {
   // Rendered with key={recording.id} by the caller, so this instance is
   // always fresh for a given recording — no need to reset state on prop change.
@@ -111,9 +113,9 @@ export function RecordingDetailModal({
     }
   }
 
-  function handleAutoTranscribeClick(language: string) {
+  function handleAutoTranscribeClick(language: string, modelId: string) {
     snapshotTranscriptForUndo();
-    onAutoTranscribe(recording, language);
+    onAutoTranscribe(recording, language, modelId);
   }
 
   async function removeTabLines() {
@@ -270,6 +272,7 @@ export function RecordingDetailModal({
             transcriberBusyElsewhere={transcriberBusyElsewhere}
             transcriberStatus={transcriberStatus}
             transcriberProgress={transcriberProgress}
+            transcriberTranscribeProgress={transcriberTranscribeProgress}
             hasPreviousTranscript={previousTranscript !== null}
             onUndoTranscript={undoTranscript}
             onRemoveTabLines={removeTabLines}

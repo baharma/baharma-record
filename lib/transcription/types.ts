@@ -1,17 +1,33 @@
 import type { TranscriptSegment } from "@/lib/types";
 
 /**
- * Multilingual Whisper model, run entirely client-side via onnxruntime-web.
- * "tiny" keeps the one-time download as small as practical; swap for
- * "Xenova/whisper-base" (or larger) for better accuracy at the cost of a
- * bigger download. Loaded at fp32 (see whisper.worker.ts) rather than a
- * quantized dtype: the quantized/fp16 exports currently hit a graph-
- * optimizer bug in the onnxruntime-web dev build transformers.js depends
- * on (fails with "Missing required scale for DequantizeLinear" or a
- * LayerNorm fusion error when creating the session) — fp32 avoids that
- * code path entirely, at the cost of a larger download (~150MB for tiny).
+ * Multilingual Whisper models, run entirely client-side via onnxruntime-web.
+ * All are loaded at fp32 (see whisper.worker.ts) rather than a quantized
+ * dtype: the quantized/fp16 exports currently hit a graph-optimizer bug in
+ * the onnxruntime-web dev build transformers.js depends on (fails with
+ * "Missing required scale for DequantizeLinear" or a LayerNorm fusion error
+ * when creating the session) — fp32 avoids that code path entirely, at the
+ * cost of a larger download.
+ *
+ * The choice is the user's because it's a genuine trade, not a default to
+ * tune: "base" is markedly more accurate (especially on non-English and on
+ * sung vocals, where "tiny" struggles badly) but is ~2x the download and
+ * ~2x slower, which on an hour-long recording is the difference between a
+ * long wait and a much longer one.
  */
-export const WHISPER_MODEL_ID = "Xenova/whisper-tiny";
+export interface WhisperModelOption {
+  id: string;
+  label: string;
+  /** Approximate one-time download, shown in the picker. */
+  sizeLabel: string;
+}
+
+export const WHISPER_MODELS: WhisperModelOption[] = [
+  { id: "Xenova/whisper-tiny", label: "Tiny — fastest", sizeLabel: "~150MB" },
+  { id: "Xenova/whisper-base", label: "Base — more accurate", sizeLabel: "~290MB" },
+];
+
+export const DEFAULT_WHISPER_MODEL_ID = WHISPER_MODELS[0].id;
 
 export interface ModelFileProgress {
   file: string;
@@ -26,11 +42,22 @@ export type WorkerRequest = {
   audio: Float32Array;
   /** 2-letter Whisper language code, e.g. "id" — see lib/speechLanguage.ts. */
   language: string;
+  /** One of WHISPER_MODELS' ids. */
+  modelId: string;
 };
+
+/** How far through the clip transcription has got. */
+export interface TranscribeProgress {
+  processedSeconds: number;
+  totalSeconds: number;
+  /** "recovering" = the second sweep re-checking stretches the model skipped. */
+  phase: "transcribing" | "recovering";
+}
 
 export type WorkerResponse =
   | { type: "status"; requestId: string; phase: "loading-model" | "transcribing" }
   | { type: "progress"; requestId: string; progress: ModelFileProgress }
+  | { type: "transcribe-progress"; requestId: string; progress: TranscribeProgress }
   | {
       type: "result";
       requestId: string;
