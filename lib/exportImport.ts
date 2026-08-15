@@ -14,20 +14,23 @@ interface RecordingMetaJson {
   source_type: SourceType;
   created_at: number;
   duration_seconds: number;
+  /** References "video.<ext>" instead of "audio.<ext>" when has_video is true. */
   audio_file: string;
+  has_video: boolean;
   has_transcript: boolean;
   transcript_segments: TranscriptSegment[] | null;
   transcript_edited_manually: boolean;
 }
 
-function metaFromEntry(entry: RecordingEntry, audioFile: string): RecordingMetaJson {
+function metaFromEntry(entry: RecordingEntry, mediaFile: string): RecordingMetaJson {
   return {
     id: entry.id,
     label: entry.label,
     source_type: entry.sourceType,
     created_at: entry.createdAt,
     duration_seconds: entry.durationSeconds,
-    audio_file: audioFile,
+    audio_file: mediaFile,
+    has_video: Boolean(entry.hasVideo),
     has_transcript: Boolean(entry.transcriptSegments && entry.transcriptSegments.length > 0),
     transcript_segments: entry.transcriptSegments,
     transcript_edited_manually: entry.transcriptEditedManually,
@@ -43,11 +46,11 @@ function transcriptToText(entry: RecordingEntry): string {
 
 function buildZipForEntry(zip: JSZip, entry: RecordingEntry): string {
   const ext = extensionForMimeType(entry.audioMimeType);
-  const audioFile = `audio.${ext}`;
-  zip.file(audioFile, entry.audioBlob);
-  zip.file("meta.json", JSON.stringify(metaFromEntry(entry, audioFile), null, 2));
+  const mediaFile = `${entry.hasVideo ? "video" : "audio"}.${ext}`;
+  zip.file(mediaFile, entry.audioBlob);
+  zip.file("meta.json", JSON.stringify(metaFromEntry(entry, mediaFile), null, 2));
   zip.file("transcript.txt", transcriptToText(entry));
-  return audioFile;
+  return mediaFile;
 }
 
 export async function exportRecordingToZip(entry: RecordingEntry): Promise<Blob> {
@@ -116,16 +119,20 @@ async function parseRecordingFolder(
 
   let audioFile = meta.audio_file ? folder.file(meta.audio_file) : null;
   if (!audioFile) {
-    const fallback = folder.filter((path) => /^audio\.[a-z0-9]+$/i.test(path));
+    const fallback = folder.filter((path) => /^(?:audio|video)\.[a-z0-9]+$/i.test(path));
     audioFile = fallback[0] ?? null;
   }
   if (!audioFile) {
     throw new Error(`"${folderLabel}" is missing its audio file.`);
   }
 
+  const hasVideo = Boolean(meta.has_video);
   const audioArrayBuffer = await audioFile.async("arraybuffer");
   const extMatch = audioFile.name.match(/\.([a-z0-9]+)$/i);
-  const mimeType = mimeTypeForExtension(extMatch ? extMatch[1] : "webm");
+  const mimeType = mimeTypeForExtension(
+    extMatch ? extMatch[1] : "webm",
+    hasVideo ? "video" : "audio",
+  );
   const audioBlob = new Blob([audioArrayBuffer], { type: mimeType });
 
   return {
@@ -136,6 +143,7 @@ async function parseRecordingFolder(
     durationSeconds: meta.duration_seconds,
     audioBlob,
     audioMimeType: mimeType,
+    hasVideo,
     transcriptSegments: meta.transcript_segments ?? null,
     transcriptEditedManually: Boolean(meta.transcript_edited_manually),
     // The secondary (isolated tab-only) audio used to fill in a "mixed"

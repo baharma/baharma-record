@@ -1,12 +1,15 @@
 import { isDisplayMediaSupported } from "./browserSupport";
 
 /**
- * Captures a tab/window/screen via getDisplayMedia and returns an audio-only
- * MediaStream. The video track is stopped immediately since only audio is
- * needed — this also releases the "you are sharing your screen" indicator
- * as soon as possible for anything that doesn't need the video.
+ * Captures a tab/window/screen via getDisplayMedia and returns a MediaStream
+ * with audio (always) and, when `includeVideo` is set, the video track too.
+ * Video is otherwise stopped immediately after acquisition — this also
+ * releases the "you are sharing your screen" indicator as soon as possible
+ * for anything that doesn't need the video.
  */
-export async function acquireTabAudioStream(): Promise<MediaStream> {
+export async function acquireTabAudioStream(
+  options: { includeVideo?: boolean } = {},
+): Promise<MediaStream> {
   if (!isDisplayMediaSupported()) {
     throw new Error(
       "Tab/window audio capture is not supported in this browser. Please use desktop Chrome or another Chromium-based browser.",
@@ -25,7 +28,9 @@ export async function acquireTabAudioStream(): Promise<MediaStream> {
     surfaceSwitching: "include",
   } as DisplayMediaStreamOptions);
 
-  displayStream.getVideoTracks().forEach((track) => track.stop());
+  if (!options.includeVideo) {
+    displayStream.getVideoTracks().forEach((track) => track.stop());
+  }
 
   const audioTracks = displayStream.getAudioTracks();
   if (audioTracks.length === 0) {
@@ -35,17 +40,22 @@ export async function acquireTabAudioStream(): Promise<MediaStream> {
     );
   }
 
-  return new MediaStream(audioTracks);
+  return options.includeVideo ? displayStream : new MediaStream(audioTracks);
 }
 
-export async function acquireMicrophoneStream(): Promise<MediaStream> {
+export async function acquireMicrophoneStream(
+  options: { includeVideo?: boolean } = {},
+): Promise<MediaStream> {
   if (
     typeof navigator === "undefined" ||
     !navigator.mediaDevices?.getUserMedia
   ) {
     throw new Error("Microphone capture is not supported in this browser.");
   }
-  return navigator.mediaDevices.getUserMedia({ audio: true });
+  return navigator.mediaDevices.getUserMedia({
+    audio: true,
+    video: Boolean(options.includeVideo),
+  });
 }
 
 export function friendlyErrorMessage(error: unknown): string {

@@ -1,7 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { isDisplayMediaSupported, isSpeechRecognitionSupported } from "@/lib/browserSupport";
+import {
+  isDisplayMediaSupported,
+  isSpeechRecognitionSupported,
+  isVideoRecordingSupported,
+} from "@/lib/browserSupport";
 import { generateId } from "@/lib/id";
 import {
   acquireMicrophoneStream,
@@ -35,14 +39,17 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
   const [choice, setChoice] = useState<Choice | null>(null);
   const [label, setLabel] = useState("");
   const [language, setLanguage] = useState(() => defaultSpeechLanguageCode());
+  const [includeVideo, setIncludeVideo] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const displaySupported = isDisplayMediaSupported();
   const speechSupported = isSpeechRecognitionSupported();
+  const videoSupported = isVideoRecordingSupported();
 
   function pick(next: Choice) {
     setChoice(next);
     setLabel("");
+    setIncludeVideo(false);
     setStep("label");
   }
 
@@ -62,7 +69,7 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
       const sessions: PendingSession[] = [];
 
       if (choice === "tab") {
-        const tabStream = await acquireTabAudioStream();
+        const tabStream = await acquireTabAudioStream({ includeVideo });
         acquiredStreams.push(tabStream);
         sessions.push({
           id: generateId(),
@@ -73,7 +80,7 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
           recognitionLang,
         });
       } else if (choice === "mic") {
-        const micStream = await acquireMicrophoneStream();
+        const micStream = await acquireMicrophoneStream({ includeVideo });
         acquiredStreams.push(micStream);
         sessions.push({
           id: generateId(),
@@ -89,7 +96,8 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
         // recorded stream is the mix — SpeechRecognition never consumes
         // `stream` at all, it listens to the physical microphone directly
         // (see useRecordingSession.ts), independent of what's being recorded.
-        const tabStream = await acquireTabAudioStream();
+        // Mic never contributes video here — only the tab side has one.
+        const tabStream = await acquireTabAudioStream({ includeVideo });
         acquiredStreams.push(tabStream);
         const micStream = await acquireMicrophoneStream();
         acquiredStreams.push(micStream);
@@ -100,17 +108,24 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
         audioContext.createMediaStreamSource(micStream).connect(destination);
         const context = audioContext;
 
+        // Primary recorded stream: mixed audio, plus the tab's video track
+        // (if requested) riding alongside it so one MediaRecorder captures
+        // both.
+        const primaryTracks: MediaStreamTrack[] = [...destination.stream.getAudioTracks()];
+        if (includeVideo) primaryTracks.push(...tabStream.getVideoTracks());
+
         sessions.push({
           id: generateId(),
           sourceType: "mixed",
           label: baseLabel,
-          stream: destination.stream,
+          stream: new MediaStream(primaryTracks),
           enableTranscript: speechSupported,
           recognitionLang,
-          // Recorded in parallel (separately from the mix) so "Transcribe
-          // Tab Audio" can later run Whisper on a clean, isolated signal —
+          // Isolated, audio-only tab track recorded in parallel (separately
+          // from the mix, and never carrying video even if includeVideo) so
+          // "Transcribe Tab Audio" can later run Whisper on a clean signal —
           // see RecordingEntry.secondaryAudioBlob.
-          secondaryStream: tabStream,
+          secondaryStream: new MediaStream(tabStream.getAudioTracks()),
           extraCleanup: () => {
             tabStream.getTracks().forEach((track) => track.stop());
             micStream.getTracks().forEach((track) => track.stop());
@@ -206,6 +221,25 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
               placeholder={defaultLabel(choice)}
               className="mt-3 w-full rounded-md border border-zinc-300 bg-transparent px-3 py-2 text-sm dark:border-zinc-700"
             />
+
+            <label
+              className={`mt-3 flex items-center gap-2 text-sm ${
+                videoSupported ? "" : "opacity-50"
+              }`}
+              title={
+                videoSupported
+                  ? undefined
+                  : "This browser can't record video (no supported MediaRecorder video format)."
+              }
+            >
+              <input
+                type="checkbox"
+                checked={includeVideo}
+                disabled={!videoSupported}
+                onChange={(event) => setIncludeVideo(event.target.checked)}
+              />
+              {choice === "mic" ? "Also record webcam video" : "Also include video"}
+            </label>
 
             {choice === "tab" && (
               <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">

@@ -36,6 +36,7 @@ export function ActiveSessionCard({ session, onFinalized, onRemove, onWarning }:
   const latestTranscript = [transcriptSegments.at(-1)?.text, interimText]
     .filter(Boolean)
     .join(" ");
+  const hasVideo = session.stream.getVideoTracks().length > 0;
 
   return (
     <div className="rounded-lg border border-red-200 bg-red-50/50 p-4 dark:border-red-900 dark:bg-red-950/20">
@@ -50,6 +51,7 @@ export function ActiveSessionCard({ session, onFinalized, onRemove, onWarning }:
           </div>
           <p className="mt-0.5 text-xs text-zinc-500">
             {sourceTypeLabel(session.sourceType)}
+            {hasVideo ? " · Video" : ""}
             {" · "}
             {session.enableTranscript ? "Live transcript" : "Audio only"}
           </p>

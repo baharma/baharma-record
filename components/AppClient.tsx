@@ -22,7 +22,6 @@ export default function AppClient() {
   const [activeSessions, setActiveSessions] = useState<PendingSession[]>([]);
   const [showNewSourceModal, setShowNewSourceModal] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [refreshTick, setRefreshTick] = useState(0);
   const [importing, setImporting] = useState(false);
   const [transcribingId, setTranscribingId] = useState<string | null>(null);
 
@@ -39,7 +38,6 @@ export default function AppClient() {
     async (entry: RecordingEntry) => {
       try {
         await store.addRecording(entry);
-        setRefreshTick((t) => t + 1);
         push("success", `Saved "${entry.label}" to your library.`);
       } catch (error) {
         push("error", error instanceof Error ? error.message : "Failed to save recording.");
@@ -51,7 +49,6 @@ export default function AppClient() {
   const handleDelete = useCallback(
     async (id: string) => {
       await store.deleteRecording(id);
-      setRefreshTick((t) => t + 1);
       setSelectedId((current) => (current === id ? null : current));
     },
     [store],
@@ -154,7 +151,6 @@ export default function AppClient() {
       const { entries, errors } = await importZipFile(file);
       if (entries.length > 0) {
         await store.addRecordings(entries);
-        setRefreshTick((t) => t + 1);
         push("success", `Imported ${entries.length} recording${entries.length === 1 ? "" : "s"}.`);
       }
       errors.forEach((message) => push("error", message));
@@ -184,7 +180,7 @@ export default function AppClient() {
       </header>
 
       <BrowserWarningBanner />
-      <StorageEstimateBar refreshKey={refreshTick} />
+      <StorageEstimateBar recordings={store.recordings} />
 
       <Toolbar
         onNewSource={() => setShowNewSourceModal(true)}

@@ -28,6 +28,12 @@ export interface RecordingEntry {
   durationSeconds: number;
   audioBlob: Blob;
   audioMimeType: string;
+  /**
+   * True if audioBlob's container also has a video track (screen/tab/webcam
+   * video). Older records predate this field and read as undefined at
+   * runtime despite the type — always access via Boolean(entry.hasVideo).
+   */
+  hasVideo: boolean;
   transcriptSegments: TranscriptSegment[] | null;
   /** True once the transcript has been overwritten by the user. */
   transcriptEditedManually: boolean;

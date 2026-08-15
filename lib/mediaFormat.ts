@@ -6,32 +6,43 @@ const CANDIDATE_AUDIO_MIME_TYPES = [
   "audio/mp4",
 ];
 
-export function pickSupportedMimeType(): string | undefined {
+const CANDIDATE_VIDEO_MIME_TYPES = [
+  "video/webm;codecs=vp9,opus",
+  "video/webm;codecs=vp8,opus",
+  "video/webm",
+  "video/mp4",
+];
+
+export function pickSupportedMimeType(preferVideo = false): string | undefined {
   if (typeof MediaRecorder === "undefined") return undefined;
-  return CANDIDATE_AUDIO_MIME_TYPES.find((type) =>
-    MediaRecorder.isTypeSupported(type),
-  );
+  const candidates = preferVideo ? CANDIDATE_VIDEO_MIME_TYPES : CANDIDATE_AUDIO_MIME_TYPES;
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type));
 }
 
 export function extensionForMimeType(mimeType: string): string {
   const type = mimeType.toLowerCase();
+  const isVideo = type.startsWith("video/");
   if (type.includes("ogg")) return "ogg";
-  if (type.includes("mp4")) return "m4a";
+  if (type.includes("mp4")) return isVideo ? "mp4" : "m4a";
   if (type.includes("wav")) return "wav";
   return "webm";
 }
 
-export function mimeTypeForExtension(extension: string): string {
+export function mimeTypeForExtension(
+  extension: string,
+  kind: "audio" | "video" = "audio",
+): string {
   switch (extension.toLowerCase()) {
     case "ogg":
-      return "audio/ogg";
+      return `${kind}/ogg`;
     case "m4a":
-    case "mp4":
       return "audio/mp4";
+    case "mp4":
+      return `${kind}/mp4`;
     case "wav":
       return "audio/wav";
     default:
-      return "audio/webm";
+      return `${kind}/webm`;
   }
 }
 

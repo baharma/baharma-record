@@ -1,3 +1,5 @@
+import { pickSupportedMimeType } from "./mediaFormat";
+
 export function isMobileUserAgent(): boolean {
   if (typeof navigator === "undefined") return false;
   return /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
@@ -29,4 +31,8 @@ export function getSpeechRecognitionConstructor():
   | undefined {
   if (typeof window === "undefined") return undefined;
   return window.SpeechRecognition ?? window.webkitSpeechRecognition;
+}
+
+export function isVideoRecordingSupported(): boolean {
+  return typeof pickSupportedMimeType(true) === "string";
 }

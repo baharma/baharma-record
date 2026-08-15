@@ -2,9 +2,10 @@
 
 import { useStorageEstimate } from "@/hooks/useStorageEstimate";
 import { formatBytes } from "@/lib/mediaFormat";
+import type { RecordingEntry } from "@/lib/types";
 
-export function StorageEstimateBar({ refreshKey }: { refreshKey: number }) {
-  const { usage, quota, supported } = useStorageEstimate(refreshKey);
+export function StorageEstimateBar({ recordings }: { recordings: RecordingEntry[] }) {
+  const { usage, quota, supported } = useStorageEstimate(recordings);
 
   if (!supported || quota === 0) return null;
 
@@ -14,7 +15,7 @@ export function StorageEstimateBar({ refreshKey }: { refreshKey: number }) {
   return (
     <div className="rounded-lg border border-zinc-200 p-3 text-sm dark:border-zinc-800">
       <div className="mb-1.5 flex items-center justify-between">
-        <span className="text-zinc-600 dark:text-zinc-400">Browser storage used</span>
+        <span className="text-zinc-600 dark:text-zinc-400">Recordings storage used</span>
         <span
           className={
             nearLimit

@@ -12,6 +12,7 @@ export function RecordingCard({ recording, onSelect }: Props) {
   const hasTranscript = Boolean(
     recording.transcriptSegments && recording.transcriptSegments.length > 0,
   );
+  const hasVideo = Boolean(recording.hasVideo);
 
   return (
     <button
@@ -27,6 +28,11 @@ export function RecordingCard({ recording, onSelect }: Props) {
         <span className="rounded-full bg-zinc-100 px-2 py-0.5 font-mono dark:bg-zinc-800">
           {formatDuration(recording.durationSeconds)}
         </span>
+        {hasVideo && (
+          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-blue-800 dark:bg-blue-950 dark:text-blue-400">
+            Video
+          </span>
+        )}
         {hasTranscript ? (
           <span className="rounded-full bg-green-100 px-2 py-0.5 text-green-800 dark:bg-green-950 dark:text-green-400">
             Has transcript

@@ -72,7 +72,9 @@ export function useRecordingSession({
       timerRef.current = null;
     }
 
-    const mimeType = mediaRecorderRef.current?.mimeType || "audio/webm";
+    const hasVideo = stream.getVideoTracks().length > 0;
+    const mimeType =
+      mediaRecorderRef.current?.mimeType || (hasVideo ? "video/webm" : "audio/webm");
     const audioBlob = new Blob(chunksRef.current, { type: mimeType });
     const durationSeconds = Math.max(
       1,
@@ -93,6 +95,7 @@ export function useRecordingSession({
       durationSeconds,
       audioBlob,
       audioMimeType: mimeType,
+      hasVideo,
       transcriptSegments: enableTranscript ? transcriptSegmentsRef.current : null,
       transcriptEditedManually: false,
       secondaryAudioBlob,
@@ -101,7 +104,7 @@ export function useRecordingSession({
 
     setStatus("stopped");
     onFinalized(entry);
-  }, [label, sourceType, enableTranscript, secondaryStream, onFinalized]);
+  }, [label, sourceType, enableTranscript, secondaryStream, onFinalized, stream]);
 
   // Only finalize once a real stop was requested AND every recorder/
   // recognizer that was actually running has actually finished — never on
@@ -170,7 +173,7 @@ export function useRecordingSession({
     // Nothing to wait for from recognition unless it actually starts below.
     recognitionEndedRef.current = !enableTranscript;
 
-    const mimeType = pickSupportedMimeType();
+    const mimeType = pickSupportedMimeType(stream.getVideoTracks().length > 0);
     const recorder = new MediaRecorder(
       stream,
       mimeType ? { mimeType } : undefined,

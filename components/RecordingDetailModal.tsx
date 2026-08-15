@@ -35,7 +35,10 @@ export function RecordingDetailModal({
 }: Props) {
   // Rendered with key={recording.id} by the caller, so this instance is
   // always fresh for a given recording — no need to reset state on prop change.
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const mediaRef = useRef<HTMLMediaElement | null>(null);
+  const setMediaRef = (el: HTMLMediaElement | null) => {
+    mediaRef.current = el;
+  };
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [editingLabel, setEditingLabel] = useState(false);
@@ -65,9 +68,9 @@ export function RecordingDetailModal({
   }, [recording.audioBlob]);
 
   function handleSeek(time: number) {
-    if (audioRef.current) {
-      audioRef.current.currentTime = time;
-      audioRef.current.play().catch(() => {});
+    if (mediaRef.current) {
+      mediaRef.current.currentTime = time;
+      mediaRef.current.play().catch(() => {});
     }
   }
 
@@ -167,6 +170,7 @@ export function RecordingDetailModal({
   const hasTranscript = Boolean(
     recording.transcriptSegments && recording.transcriptSegments.length > 0,
   );
+  const hasVideo = Boolean(recording.hasVideo);
 
   return (
     <div
@@ -216,7 +220,8 @@ export function RecordingDetailModal({
             )}
             <p className="mt-1 text-xs text-zinc-500">
               {formatDateTime(recording.createdAt)} · {formatDuration(recording.durationSeconds)}{" "}
-              · {sourceTypeLabel(recording.sourceType)} ·{" "}
+              · {sourceTypeLabel(recording.sourceType)}
+              {hasVideo ? " · Video" : ""} ·{" "}
               {hasTranscript ? "Has transcript" : "Audio only"}
             </p>
           </div>
@@ -230,15 +235,24 @@ export function RecordingDetailModal({
         </div>
 
         <div className="border-b border-zinc-200 p-4 dark:border-zinc-800">
-          {audioUrl && (
-            <audio
-              ref={audioRef}
-              src={audioUrl}
-              controls
-              className="w-full"
-              onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-            />
-          )}
+          {audioUrl &&
+            (hasVideo ? (
+              <video
+                ref={setMediaRef}
+                src={audioUrl}
+                controls
+                className="max-h-[40vh] w-full rounded-md bg-black"
+                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+              />
+            ) : (
+              <audio
+                ref={setMediaRef}
+                src={audioUrl}
+                controls
+                className="w-full"
+                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+              />
+            ))}
         </div>
 
         {/* A flex column, not a plain block: the panel inside sizes itself
