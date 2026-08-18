@@ -30,6 +30,14 @@ This is a 100% client-side app — Next.js only serves static files; there is no
 API routes, and no server-held state. Everything (recordings, transcripts, settings) lives
 in the browser's IndexedDB, scoped per-browser/per-device.
 
+**Desktop Chrome only.** `getDisplayMedia` (tab/window audio capture) and the Web Speech API
+(live transcription) aren't reliably supported on mobile browsers or in Firefox/Safari — the
+app doesn't polyfill either. `lib/browserSupport.ts` centralizes the feature-detection
+(`isMobileUserAgent`, `isDisplayMediaSupported`, `isSpeechRecognitionSupported`,
+`isUserMediaSupported`, `isVideoRecordingSupported`); `BrowserWarningBanner` reads it to show
+an inline warning rather than blocking the app outright, since microphone-only recording can
+still work in a degraded browser.
+
 ### Client-only boundary
 
 Every browser-only API (`MediaRecorder`, `getDisplayMedia`, `IndexedDB`, `SpeechRecognition`,
@@ -173,3 +181,12 @@ wrapper) and is the only place that talks to IndexedDB directly. `lib/exportImpo
 (JSZip) and `lib/transcriptFormat.ts` both read/write `RecordingEntry`/`TranscriptSegment`
 shapes — the exported `transcript.txt` and the in-app "Copy Transcript" button share
 `lib/transcriptFormat.ts`'s single formatter so the two outputs can't drift apart.
+
+`RecordingEntry.hasVideo` is derived once at recording time from
+`stream.getVideoTracks().length > 0` (`useRecordingSession.ts`) and stored on the entry —
+`audioBlob` holds the video track too when true, it isn't a separate blob. Records saved
+before this field existed read as `undefined` at runtime despite the `boolean` type, so every
+read goes through `Boolean(entry.hasVideo)` rather than a direct truthy check. Export mirrors
+this: `lib/exportImport.ts` names the media file inside the zip `video.<ext>` vs `audio.<ext>`
+based on the same flag (recorded as `has_video` in `meta.json`), and import reads that name
+back to reconstruct `hasVideo` rather than sniffing the file itself.
