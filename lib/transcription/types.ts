@@ -10,10 +10,14 @@ import type { TranscriptSegment } from "@/lib/types";
  * cost of a larger download.
  *
  * The choice is the user's because it's a genuine trade, not a default to
- * tune: "base" is markedly more accurate (especially on non-English and on
- * sung vocals, where "tiny" struggles badly) but is ~2x the download and
- * ~2x slower, which on an hour-long recording is the difference between a
- * long wait and a much longer one.
+ * tune: each step up is markedly more accurate (especially on non-English,
+ * on sung vocals, and on code-switched speech — a smaller model is quicker
+ * to fall back to the nearest in-language word it knows for a foreign term
+ * it doesn't have the capacity to place) but roughly doubles both the
+ * download and the runtime, which on an hour-long recording is the
+ * difference between a long wait and a much longer one. "Small" in
+ * particular is a real commitment: ~970MB (vs. tiny's ~150MB) and several
+ * times slower, since this app runs fp32 on wasm with no GPU.
  */
 export interface WhisperModelOption {
   id: string;
@@ -25,6 +29,7 @@ export interface WhisperModelOption {
 export const WHISPER_MODELS: WhisperModelOption[] = [
   { id: "Xenova/whisper-tiny", label: "Tiny — fastest", sizeLabel: "~150MB" },
   { id: "Xenova/whisper-base", label: "Base — more accurate", sizeLabel: "~290MB" },
+  { id: "Xenova/whisper-small", label: "Small — most accurate", sizeLabel: "~970MB" },
 ];
 
 export const DEFAULT_WHISPER_MODEL_ID = WHISPER_MODELS[0].id;

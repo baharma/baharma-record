@@ -96,10 +96,13 @@ on; fp32 avoids that code path at the cost of a larger one-time download (see
 verify if that's still true when upgrading the dependency).
 
 The model is the **user's choice** (`WHISPER_MODELS`, picked in `TranscriptPanel`, remembered
-in `localStorage`): "tiny" (~150MB) is markedly worse on non-English and on sung vocals, while
-"base" (~290MB) costs ~2x download and ~2x runtime — a real trade on hour-long recordings, not
-a default to tune. The worker caches one pipeline **per model id**, so switching back and forth
-doesn't re-download.
+in `localStorage`): "tiny" (~150MB) is markedly worse on non-English, on sung vocals, and on
+code-switched speech (a smaller model has less capacity to place a foreign-language word
+against a strong single-language decoding prior, and falls back to the nearest in-language
+word it knows instead); "base" (~290MB) and "small" (~970MB) each roughly double the previous
+tier's download and runtime for a further step up in accuracy — a real trade on hour-long
+recordings, not a default to tune. The worker caches one pipeline **per model id**, so
+switching back and forth doesn't re-download.
 
 Recordings here can run over an hour, which is what drives two decisions that otherwise look
 arbitrary:
