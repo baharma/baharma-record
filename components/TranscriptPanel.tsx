@@ -8,7 +8,11 @@ import { formatDuration } from "@/lib/mediaFormat";
 import { defaultSpeechLanguageCode, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
 import { formatRecordingTranscript } from "@/lib/transcriptFormat";
 import {
+  CLOUD_BASE_URL_STORAGE_KEY,
+  CLOUD_PROVIDER_STORAGE_KEY,
   CLOUD_PROVIDERS,
+  cloudApiKeyStorageKey,
+  cloudModelStorageKey,
   cloudProvider,
   type CloudProviderId,
   type TranscribeEngineRequest,
@@ -39,10 +43,6 @@ interface Props {
 
 const MODEL_STORAGE_KEY = "baharma-record:whisper-model";
 const ENGINE_STORAGE_KEY = "baharma-record:transcribe-engine";
-const CLOUD_PROVIDER_STORAGE_KEY = "baharma-record:cloud-provider";
-const CLOUD_BASE_URL_STORAGE_KEY = "baharma-record:cloud-base-url";
-const cloudApiKeyStorageKey = (provider: CloudProviderId) => `baharma-record:cloud-api-key:${provider}`;
-const cloudModelStorageKey = (provider: CloudProviderId) => `baharma-record:cloud-model:${provider}`;
 
 function progressLabel(
   status: TranscriberStatus,

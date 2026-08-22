@@ -6,11 +6,19 @@ interface Props {
   onNewSource: () => void;
   onExportAll: () => void;
   onImportFile: (file: File) => void;
+  onOpenSettings: () => void;
   exportDisabled: boolean;
   busy: boolean;
 }
 
-export function Toolbar({ onNewSource, onExportAll, onImportFile, exportDisabled, busy }: Props) {
+export function Toolbar({
+  onNewSource,
+  onExportAll,
+  onImportFile,
+  onOpenSettings,
+  exportDisabled,
+  busy,
+}: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   return (
@@ -34,6 +42,12 @@ export function Toolbar({ onNewSource, onExportAll, onImportFile, exportDisabled
         className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
       >
         {busy ? "Importing…" : "Import"}
+      </button>
+      <button
+        onClick={onOpenSettings}
+        className="ml-auto rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+      >
+        Settings
       </button>
       <input
         ref={fileInputRef}

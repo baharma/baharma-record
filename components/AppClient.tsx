@@ -13,6 +13,7 @@ import { BrowserWarningBanner } from "./BrowserWarningBanner";
 import { LibrarySection } from "./LibrarySection";
 import { NewSourceModal } from "./NewSourceModal";
 import { RecordingDetailModal } from "./RecordingDetailModal";
+import { SettingsModal } from "./SettingsModal";
 import { StorageEstimateBar } from "./StorageEstimateBar";
 import { ToastStack } from "./ToastStack";
 import { Toolbar } from "./Toolbar";
@@ -23,6 +24,7 @@ export default function AppClient() {
   const transcriber = useTranscriber();
   const [activeSessions, setActiveSessions] = useState<PendingSession[]>([]);
   const [showNewSourceModal, setShowNewSourceModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [transcribingId, setTranscribingId] = useState<string | null>(null);
@@ -200,6 +202,7 @@ export default function AppClient() {
         onNewSource={() => setShowNewSourceModal(true)}
         onExportAll={handleExportAll}
         onImportFile={handleImportFile}
+        onOpenSettings={() => setShowSettingsModal(true)}
         exportDisabled={store.recordings.length === 0}
         busy={importing}
       />
@@ -232,6 +235,8 @@ export default function AppClient() {
           onError={(message) => push("error", message)}
         />
       )}
+
+      {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} />}
 
       {selected && (
         <RecordingDetailModal

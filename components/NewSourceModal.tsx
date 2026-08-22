@@ -14,12 +14,11 @@ import {
   friendlyErrorMessage,
 } from "@/lib/mediaAcquisition";
 import { defaultSpeechLanguageCode, speechRecognitionLocale, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
+import { DEEPGRAM_KEY_STORAGE_KEY } from "@/lib/transcription/deepgramLive";
 import type { PendingSession } from "@/lib/types";
 
 type Choice = "tab" | "mic" | "both";
 type Step = "choose" | "label";
-
-const DEEPGRAM_KEY_STORAGE_KEY = "baharma-record:deepgram-api-key";
 
 interface Props {
   onClose: () => void;

@@ -1,5 +1,9 @@
 import { pickSupportedMimeType } from "@/lib/mediaFormat";
 
+// Shared between NewSourceModal's inline field and SettingsModal's
+// centralized page — same key, so a value set in one shows up in the other.
+export const DEEPGRAM_KEY_STORAGE_KEY = "baharma-record:deepgram-api-key";
+
 /**
  * Live streaming transcription for tab/window audio via Deepgram
  * (wss://api.deepgram.com/v1/listen) — the "live, like the mic" option for

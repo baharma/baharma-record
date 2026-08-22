@@ -50,6 +50,16 @@ export function cloudProvider(id: CloudProviderId): CloudProviderOption {
   return CLOUD_PROVIDERS.find((option) => option.id === id) ?? CLOUD_PROVIDERS[0];
 }
 
+// localStorage keys — shared between every place that reads or writes this
+// config (TranscriptPanel's inline controls, SettingsModal's centralized
+// page) so a value set in one shows up pre-filled in the other.
+export const CLOUD_PROVIDER_STORAGE_KEY = "baharma-record:cloud-provider";
+export const CLOUD_BASE_URL_STORAGE_KEY = "baharma-record:cloud-base-url";
+export const cloudApiKeyStorageKey = (provider: CloudProviderId) =>
+  `baharma-record:cloud-api-key:${provider}`;
+export const cloudModelStorageKey = (provider: CloudProviderId) =>
+  `baharma-record:cloud-model:${provider}`;
+
 export interface CloudTranscribeConfig {
   provider: CloudProviderId;
   /** The base URL actually used for the request — the provider's default, or the custom override. */
