@@ -21,19 +21,21 @@ export function ActiveSessionCard({ session, onFinalized, onRemove, onWarning }:
     [onFinalized, onRemove, session.id],
   );
 
-  const { status, elapsedSeconds, transcriptSegments, interimText, stop } = useRecordingSession({
-    sourceType: session.sourceType,
-    label: session.label,
-    stream: session.stream,
-    enableTranscript: session.enableTranscript,
-    recognitionLang: session.recognitionLang,
-    secondaryStream: session.secondaryStream,
-    extraCleanup: session.extraCleanup,
-    onFinalized: handleFinalized,
-    onWarning,
-  });
+  const { status, elapsedSeconds, transcriptSegments, interimText, tabInterimText, stop } =
+    useRecordingSession({
+      sourceType: session.sourceType,
+      label: session.label,
+      stream: session.stream,
+      enableTranscript: session.enableTranscript,
+      recognitionLang: session.recognitionLang,
+      secondaryStream: session.secondaryStream,
+      liveCloudTab: session.liveCloudTab,
+      extraCleanup: session.extraCleanup,
+      onFinalized: handleFinalized,
+      onWarning,
+    });
 
-  const latestTranscript = [transcriptSegments.at(-1)?.text, interimText]
+  const latestTranscript = [transcriptSegments.at(-1)?.text, interimText, tabInterimText]
     .filter(Boolean)
     .join(" ");
   const hasVideo = session.stream.getVideoTracks().length > 0;

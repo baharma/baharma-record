@@ -63,6 +63,15 @@ export interface PendingSession {
    */
   secondaryStream?: MediaStream;
   /**
+   * "tab" or "mixed" sessions only: live cloud transcription (Deepgram) of
+   * the tab-side audio — the one case the browser's own SpeechRecognition
+   * can't help with, since it only ever listens to the physical microphone.
+   * See hooks/useRecordingSession.ts and lib/transcription/deepgramLive.ts.
+   * Segments arrive tagged "tab", merged by time into the same
+   * transcriptSegments the mic side (if any) already populates.
+   */
+  liveCloudTab?: { apiKey: string; language: string };
+  /**
    * For "mixed" (tab + mic) sessions: stops the original tab/mic streams
    * and closes the AudioContext used to mix them. `stream` itself is a
    * synthetic MediaStreamAudioDestinationNode output — stopping its track

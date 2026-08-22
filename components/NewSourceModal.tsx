@@ -7,6 +7,7 @@ import {
   isVideoRecordingSupported,
 } from "@/lib/browserSupport";
 import { generateId } from "@/lib/id";
+import { readLocalStorage, writeLocalStorage } from "@/lib/localStorage";
 import {
   acquireMicrophoneStream,
   acquireTabAudioStream,
@@ -17,6 +18,8 @@ import type { PendingSession } from "@/lib/types";
 
 type Choice = "tab" | "mic" | "both";
 type Step = "choose" | "label";
+
+const DEEPGRAM_KEY_STORAGE_KEY = "baharma-record:deepgram-api-key";
 
 interface Props {
   onClose: () => void;
@@ -41,6 +44,11 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
   const [language, setLanguage] = useState(() => defaultSpeechLanguageCode());
   const [includeVideo, setIncludeVideo] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Live cloud transcription (Deepgram) for tab audio — the one case
+  // SpeechRecognition can't help with. Opt-in and additive: leaving it off
+  // reproduces the exact existing behavior for "tab"/"both" sessions.
+  const [liveCloudTabEnabled, setLiveCloudTabEnabled] = useState(false);
+  const [deepgramApiKey, setDeepgramApiKey] = useState(() => readLocalStorage(DEEPGRAM_KEY_STORAGE_KEY) ?? "");
 
   const displaySupported = isDisplayMediaSupported();
   const speechSupported = isSpeechRecognitionSupported();
@@ -50,6 +58,7 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
     setChoice(next);
     setLabel("");
     setIncludeVideo(false);
+    setLiveCloudTabEnabled(false);
     setStep("label");
   }
 
@@ -67,6 +76,10 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
       const baseLabel = label.trim() || defaultLabel(choice);
       const recognitionLang = speechRecognitionLocale(language);
       const sessions: PendingSession[] = [];
+      const liveCloudTab =
+        liveCloudTabEnabled && deepgramApiKey.trim().length > 0
+          ? { apiKey: deepgramApiKey.trim(), language }
+          : undefined;
 
       if (choice === "tab") {
         const tabStream = await acquireTabAudioStream({ includeVideo });
@@ -76,8 +89,12 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
           sourceType: "tab",
           label: baseLabel,
           stream: tabStream,
-          enableTranscript: false,
+          // Only "tab" sessions with live cloud transcription enabled get a
+          // transcript at all — the browser's own SpeechRecognition can't
+          // listen to tab audio, so without it there's nothing to save.
+          enableTranscript: Boolean(liveCloudTab),
           recognitionLang,
+          liveCloudTab,
         });
       } else if (choice === "mic") {
         const micStream = await acquireMicrophoneStream({ includeVideo });
@@ -124,8 +141,10 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
           // Isolated, audio-only tab track recorded in parallel (separately
           // from the mix, and never carrying video even if includeVideo) so
           // "Transcribe Tab Audio" can later run Whisper on a clean signal —
-          // see RecordingEntry.secondaryAudioBlob.
+          // see RecordingEntry.secondaryAudioBlob. The same isolated stream
+          // also feeds live cloud transcription, if enabled below.
           secondaryStream: new MediaStream(tabStream.getAudioTracks()),
+          liveCloudTab,
           extraCleanup: () => {
             tabStream.getTracks().forEach((track) => track.stop());
             micStream.getTracks().forEach((track) => track.stop());
@@ -243,12 +262,48 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
 
             {choice === "tab" && (
               <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-                ⚠️ Tab/window audio can&apos;t be auto-transcribed while recording — the
-                browser&apos;s speech recognition only listens to the microphone. You can
-                transcribe it automatically or add a transcript manually afterward.
+                ⚠️ Tab/window audio can&apos;t be auto-transcribed live by the browser itself —
+                its built-in speech recognition only listens to the microphone. Turn on live
+                cloud transcription below for a live transcript anyway, or transcribe it
+                automatically (or manually) after recording instead.
               </p>
             )}
-            {(choice === "mic" || choice === "both") && speechSupported && (
+
+            {(choice === "tab" || choice === "both") && (
+              <div className="mt-3 rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={liveCloudTabEnabled}
+                    onChange={(event) => setLiveCloudTabEnabled(event.target.checked)}
+                  />
+                  Live transcript for tab audio (via Deepgram API key)
+                </label>
+                {liveCloudTabEnabled && (
+                  <>
+                    <input
+                      type="password"
+                      value={deepgramApiKey}
+                      onChange={(event) => {
+                        setDeepgramApiKey(event.target.value);
+                        writeLocalStorage(DEEPGRAM_KEY_STORAGE_KEY, event.target.value);
+                      }}
+                      placeholder="Deepgram API key"
+                      autoComplete="off"
+                      className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+                    />
+                    <p className="mt-1 text-xs text-zinc-500">
+                      Sent directly from this browser to Deepgram — this app has no backend to
+                      hold it instead. The tab audio is always recorded normally regardless, so
+                      this can be left off and transcribed afterward instead.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+
+            {(((choice === "mic" || choice === "both") && speechSupported) ||
+              ((choice === "tab" || choice === "both") && liveCloudTabEnabled)) && (
               <>
                 <label className="mt-3 block text-xs text-zinc-500">
                   Language spoken (for live transcription)

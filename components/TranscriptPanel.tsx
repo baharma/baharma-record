@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriberStatus } from "@/hooks/useTranscriber";
+import { readLocalStorage, writeLocalStorage } from "@/lib/localStorage";
 import { formatDuration } from "@/lib/mediaFormat";
 import { defaultSpeechLanguageCode, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
 import { formatRecordingTranscript } from "@/lib/transcriptFormat";
@@ -41,23 +42,6 @@ const CLOUD_PROVIDER_STORAGE_KEY = "baharma-record:cloud-provider";
 const CLOUD_BASE_URL_STORAGE_KEY = "baharma-record:cloud-base-url";
 const cloudApiKeyStorageKey = (provider: CloudProviderId) => `baharma-record:cloud-api-key:${provider}`;
 const cloudModelStorageKey = (provider: CloudProviderId) => `baharma-record:cloud-model:${provider}`;
-
-function readLocalStorage(key: string): string | null {
-  try {
-    return typeof localStorage === "undefined" ? null : localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeLocalStorage(key: string, value: string) {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // Storage can be unavailable/blocked — the choice just won't stick,
-    // which isn't worth interrupting the user for.
-  }
-}
 
 function progressLabel(
   status: TranscriberStatus,

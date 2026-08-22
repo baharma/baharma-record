@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { generateId } from "@/lib/id";
 import { getSpeechRecognitionConstructor } from "@/lib/browserSupport";
 import { pickSupportedMimeType } from "@/lib/mediaFormat";
+import { startDeepgramLiveTranscription, type DeepgramLiveSession } from "@/lib/transcription/deepgramLive";
 import type { RecordingEntry, SourceType, TranscriptSegment } from "@/lib/types";
 
 export type SessionStatus = "recording" | "stopping" | "stopped";
@@ -17,6 +18,8 @@ interface UseRecordingSessionOptions {
   recognitionLang: string;
   /** See PendingSession.secondaryStream — recorded in parallel, separately. */
   secondaryStream?: MediaStream;
+  /** See PendingSession.liveCloudTab. */
+  liveCloudTab?: { apiKey: string; language: string };
   /** See PendingSession.extraCleanup — invoked alongside stopping `stream`. */
   extraCleanup?: () => void;
   onFinalized: (entry: RecordingEntry) => void;
@@ -30,6 +33,7 @@ export function useRecordingSession({
   enableTranscript,
   recognitionLang,
   secondaryStream,
+  liveCloudTab,
   extraCleanup,
   onFinalized,
   onWarning,
@@ -38,6 +42,7 @@ export function useRecordingSession({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
   const [interimText, setInterimText] = useState("");
+  const [tabInterimText, setTabInterimText] = useState("");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -48,6 +53,7 @@ export function useRecordingSession({
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   /** Pending restart of live transcription after Chrome ended a session. */
   const recognitionRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deepgramSessionRef = useRef<DeepgramLiveSession | null>(null);
   const transcriptSegmentsRef = useRef<TranscriptSegment[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const finalizedRef = useRef(false);
@@ -58,10 +64,12 @@ export function useRecordingSession({
   // recorder stops can race ahead of recognition still delivering the
   // final words the user just said — those would be silently dropped from
   // what's saved even though they displayed correctly live. Wait for both
-  // (and the secondary recorder, if any) before finalizing.
+  // (and the secondary recorder, and live cloud tab transcription, if any)
+  // before finalizing.
   const recorderStoppedRef = useRef(false);
   const recognitionEndedRef = useRef(false);
   const secondaryRecorderStoppedRef = useRef(false);
+  const deepgramEndedRef = useRef(true);
 
   const finalize = useCallback(() => {
     if (finalizedRef.current) return;
@@ -114,6 +122,7 @@ export function useRecordingSession({
     if (!recorderStoppedRef.current) return;
     if (!recognitionEndedRef.current) return;
     if (!secondaryRecorderStoppedRef.current) return;
+    if (!deepgramEndedRef.current) return;
     finalize();
   }, [finalize]);
 
@@ -129,6 +138,11 @@ export function useRecordingSession({
     }
     try {
       recognitionRef.current?.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      deepgramSessionRef.current?.stop();
     } catch {
       // ignore
     }
@@ -151,16 +165,31 @@ export function useRecordingSession({
     extraCleanup?.();
 
     // Safety net: some browsers/edge cases may not reliably fire
-    // recognition.onend after stop() — don't hang forever waiting for it.
+    // recognition.onend (or the Deepgram socket's close event) after
+    // stop() — don't hang forever waiting for them.
     setTimeout(() => {
       recorderStoppedRef.current = true;
       recognitionEndedRef.current = true;
       secondaryRecorderStoppedRef.current = true;
+      deepgramEndedRef.current = true;
       tryFinalize();
     }, 2000);
 
     tryFinalize();
   }, [stream, extraCleanup, tryFinalize]);
+
+  // "tab" sessions have no secondaryStream (there's only the one tab-only
+  // stream, which is `stream` itself); "mixed" sessions have both `stream`
+  // (the recorded tab+mic mix) and `secondaryStream` (the isolated tab-only
+  // audio) — live cloud transcription always wants the isolated tab signal,
+  // never the mic-tangled mix.
+  const tabAudioStreamForLiveCloud = liveCloudTab
+    ? sourceType === "mixed"
+      ? secondaryStream
+      : sourceType === "tab"
+        ? stream
+        : undefined
+    : undefined;
 
   useEffect(() => {
     startTimeRef.current = Date.now();
@@ -170,8 +199,11 @@ export function useRecordingSession({
     secondaryChunksRef.current = [];
     recorderStoppedRef.current = false;
     secondaryRecorderStoppedRef.current = !secondaryStream;
-    // Nothing to wait for from recognition unless it actually starts below.
+    deepgramSessionRef.current = null;
+    // Nothing to wait for from recognition/live cloud tab transcription
+    // unless they actually start below.
     recognitionEndedRef.current = !enableTranscript;
+    deepgramEndedRef.current = !tabAudioStreamForLiveCloud;
 
     const mimeType = pickSupportedMimeType(stream.getVideoTracks().length > 0);
     const recorder = new MediaRecorder(
@@ -263,10 +295,16 @@ export function useRecordingSession({
                 const time = (Date.now() - startTimeRef.current) / 1000;
                 const trimmed = text.trim();
                 if (trimmed.length > 0) {
+                  // Sorted by time, not just appended: mic segments (from
+                  // this SpeechRecognition instance) and tab segments (from
+                  // the independent Deepgram live session below) arrive on
+                  // two unrelated async timelines, so push order alone
+                  // doesn't guarantee chronological order in the merged
+                  // transcript.
                   transcriptSegmentsRef.current = [
                     ...transcriptSegmentsRef.current,
-                    { time, text: trimmed, source: "mic" },
-                  ];
+                    { time, text: trimmed, source: "mic" as const },
+                  ].sort((a, b) => a.time - b.time);
                   setTranscriptSegments(transcriptSegmentsRef.current);
                 }
               } else {
@@ -337,6 +375,42 @@ export function useRecordingSession({
       }
     }
 
+    if (tabAudioStreamForLiveCloud && liveCloudTab) {
+      const session = startDeepgramLiveTranscription(
+        tabAudioStreamForLiveCloud,
+        { apiKey: liveCloudTab.apiKey, language: liveCloudTab.language },
+        {
+          onFinal: (text) => {
+            // Same stale-instance guard as the recorder/recognition
+            // callbacks above — Strict Mode's dev-only double mount can
+            // otherwise let a phantom first session's late event corrupt
+            // the real second session's transcript.
+            if (deepgramSessionRef.current !== session) return;
+            const time = (Date.now() - startTimeRef.current) / 1000;
+            transcriptSegmentsRef.current = [
+              ...transcriptSegmentsRef.current,
+              { time, text, source: "tab" as const },
+            ].sort((a, b) => a.time - b.time);
+            setTranscriptSegments(transcriptSegmentsRef.current);
+          },
+          onInterim: (text) => {
+            if (deepgramSessionRef.current !== session) return;
+            setTabInterimText(text);
+          },
+          onError: (message) => {
+            if (deepgramSessionRef.current !== session) return;
+            onWarning(message);
+          },
+          onEnded: () => {
+            if (deepgramSessionRef.current !== session) return;
+            deepgramEndedRef.current = true;
+            tryFinalize();
+          },
+        },
+      );
+      deepgramSessionRef.current = session;
+    }
+
     return () => {
       audioTrack?.removeEventListener("ended", handleTrackEnded);
       shouldRestartRecognitionRef.current = false;
@@ -347,6 +421,11 @@ export function useRecordingSession({
       }
       try {
         recognitionRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        deepgramSessionRef.current?.stop();
       } catch {
         // ignore
       }
@@ -367,5 +446,5 @@ export function useRecordingSession({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { status, elapsedSeconds, transcriptSegments, interimText, stop };
+  return { status, elapsedSeconds, transcriptSegments, interimText, tabInterimText, stop };
 }
