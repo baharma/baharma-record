@@ -73,3 +73,16 @@ export type WorkerResponse =
       audioSeconds: number;
     }
   | { type: "error"; requestId: string; message: string };
+
+/**
+ * The common shape both transcription engines resolve to — the local worker
+ * (via useTranscriber) and cloud providers (via cloudTranscribe.ts) — so
+ * callers (AppClient's handleAutoTranscribe) don't need to know which one ran.
+ */
+export interface TranscriptionResult {
+  segments: TranscriptSegment[];
+  /** Seconds of the clip that actually contained audible sound. */
+  speechSeconds: number;
+  /** Total length of the clip that was transcribed. */
+  audioSeconds: number;
+}

@@ -6,6 +6,12 @@ import { formatDuration } from "@/lib/mediaFormat";
 import { defaultSpeechLanguageCode, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
 import { formatRecordingTranscript } from "@/lib/transcriptFormat";
 import {
+  CLOUD_PROVIDERS,
+  cloudProvider,
+  type CloudProviderId,
+  type TranscribeEngineRequest,
+} from "@/lib/transcription/cloudProviders";
+import {
   DEFAULT_WHISPER_MODEL_ID,
   WHISPER_MODELS,
   type ModelFileProgress,
@@ -18,7 +24,7 @@ interface Props {
   currentTime: number;
   onSeek: (time: number) => void;
   onSaveTranscript: (segments: TranscriptSegment[]) => Promise<void> | void;
-  onAutoTranscribe: (language: string, modelId: string) => void;
+  onAutoTranscribe: (language: string, request: TranscribeEngineRequest) => void;
   isTranscribing: boolean;
   transcriberBusyElsewhere: boolean;
   transcriberStatus: TranscriberStatus;
@@ -30,6 +36,28 @@ interface Props {
 }
 
 const MODEL_STORAGE_KEY = "baharma-record:whisper-model";
+const ENGINE_STORAGE_KEY = "baharma-record:transcribe-engine";
+const CLOUD_PROVIDER_STORAGE_KEY = "baharma-record:cloud-provider";
+const CLOUD_BASE_URL_STORAGE_KEY = "baharma-record:cloud-base-url";
+const cloudApiKeyStorageKey = (provider: CloudProviderId) => `baharma-record:cloud-api-key:${provider}`;
+const cloudModelStorageKey = (provider: CloudProviderId) => `baharma-record:cloud-model:${provider}`;
+
+function readLocalStorage(key: string): string | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Storage can be unavailable/blocked — the choice just won't stick,
+    // which isn't worth interrupting the user for.
+  }
+}
 
 function progressLabel(
   status: TranscriberStatus,
@@ -97,9 +125,50 @@ export function TranscriptPanel({
   // needless friction, and the choice is a standing preference (speed vs
   // accuracy) rather than a per-recording one.
   const [modelId, setModelId] = useState(() => {
-    const saved = typeof localStorage === "undefined" ? null : localStorage.getItem(MODEL_STORAGE_KEY);
+    const saved = readLocalStorage(MODEL_STORAGE_KEY);
     return WHISPER_MODELS.some((model) => model.id === saved) ? saved! : DEFAULT_WHISPER_MODEL_ID;
   });
+  // Cloud transcription: an additive alternative to the local Whisper model
+  // above — sends audio to a user-configured API instead of running it in
+  // this browser. See lib/transcription/cloudProviders.ts.
+  const [engine, setEngine] = useState<"local" | "cloud">(() =>
+    readLocalStorage(ENGINE_STORAGE_KEY) === "cloud" ? "cloud" : "local",
+  );
+  const [cloudProviderId, setCloudProviderId] = useState<CloudProviderId>(() => {
+    const saved = readLocalStorage(CLOUD_PROVIDER_STORAGE_KEY);
+    return CLOUD_PROVIDERS.some((option) => option.id === saved)
+      ? (saved as CloudProviderId)
+      : CLOUD_PROVIDERS[0].id;
+  });
+  const [apiKey, setApiKey] = useState(
+    () => readLocalStorage(cloudApiKeyStorageKey(cloudProviderId)) ?? "",
+  );
+  const [customBaseUrl, setCustomBaseUrl] = useState(
+    () => readLocalStorage(CLOUD_BASE_URL_STORAGE_KEY) ?? "",
+  );
+  const [cloudModel, setCloudModel] = useState(() => {
+    const saved = readLocalStorage(cloudModelStorageKey(cloudProviderId));
+    return saved && saved.length > 0 ? saved : cloudProvider(cloudProviderId).defaultModel;
+  });
+
+  // Each provider remembers its own key/model, so switching providers
+  // doesn't clobber what was typed for another one. Adjusted during render
+  // (React's sanctioned pattern for "reset state when a value changes")
+  // rather than in an effect, which would cost an extra render pass.
+  const [loadedProviderId, setLoadedProviderId] = useState(cloudProviderId);
+  if (cloudProviderId !== loadedProviderId) {
+    setLoadedProviderId(cloudProviderId);
+    setApiKey(readLocalStorage(cloudApiKeyStorageKey(cloudProviderId)) ?? "");
+    const savedModel = readLocalStorage(cloudModelStorageKey(cloudProviderId));
+    setCloudModel(savedModel && savedModel.length > 0 ? savedModel : cloudProvider(cloudProviderId).defaultModel);
+  }
+
+  const cloudReady =
+    engine !== "cloud" ||
+    (apiKey.trim().length > 0 &&
+      cloudModel.trim().length > 0 &&
+      (cloudProviderId !== "custom" || customBaseUrl.trim().length > 0));
+
   const [copied, setCopied] = useState(false);
   const activeRef = useRef<HTMLButtonElement | null>(null);
 
@@ -310,34 +379,123 @@ export function TranscriptPanel({
               ))}
             </select>
             <select
-              value={modelId}
+              value={engine}
               onChange={(event) => {
-                setModelId(event.target.value);
-                try {
-                  localStorage.setItem(MODEL_STORAGE_KEY, event.target.value);
-                } catch {
-                  // Storage can be unavailable/blocked — the choice just
-                  // won't stick, which is not worth interrupting the user for.
-                }
+                const next = event.target.value as "local" | "cloud";
+                setEngine(next);
+                writeLocalStorage(ENGINE_STORAGE_KEY, next);
               }}
               disabled={isTranscribing || transcriberBusyElsewhere}
               className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
-              title="Bigger models are more accurate but download slower and take longer to run"
+              title="Run transcription locally in this browser, or send audio to a cloud API"
             >
-              {WHISPER_MODELS.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.label} ({model.sizeLabel})
-                </option>
-              ))}
+              <option value="local">Local (offline)</option>
+              <option value="cloud">Cloud (API key)</option>
             </select>
+            {engine === "local" ? (
+              <select
+                value={modelId}
+                onChange={(event) => {
+                  setModelId(event.target.value);
+                  writeLocalStorage(MODEL_STORAGE_KEY, event.target.value);
+                }}
+                disabled={isTranscribing || transcriberBusyElsewhere}
+                className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
+                title="Bigger models are more accurate but download slower and take longer to run"
+              >
+                {WHISPER_MODELS.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label} ({model.sizeLabel})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <>
+                <select
+                  value={cloudProviderId}
+                  onChange={(event) => {
+                    const next = event.target.value as CloudProviderId;
+                    setCloudProviderId(next);
+                    writeLocalStorage(CLOUD_PROVIDER_STORAGE_KEY, next);
+                  }}
+                  disabled={isTranscribing || transcriberBusyElsewhere}
+                  className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
+                  title="Any provider exposing an OpenAI-style /audio/transcriptions endpoint works"
+                >
+                  {CLOUD_PROVIDERS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(event) => {
+                    setApiKey(event.target.value);
+                    writeLocalStorage(cloudApiKeyStorageKey(cloudProviderId), event.target.value);
+                  }}
+                  disabled={isTranscribing || transcriberBusyElsewhere}
+                  placeholder="API key"
+                  autoComplete="off"
+                  className="w-32 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
+                  title="Stored only in this browser (localStorage) and sent directly to the provider — this app has no backend to hold it instead"
+                />
+                {cloudProviderId === "custom" && (
+                  <input
+                    type="text"
+                    value={customBaseUrl}
+                    onChange={(event) => {
+                      setCustomBaseUrl(event.target.value);
+                      writeLocalStorage(CLOUD_BASE_URL_STORAGE_KEY, event.target.value);
+                    }}
+                    disabled={isTranscribing || transcriberBusyElsewhere}
+                    placeholder="https://.../v1"
+                    className="w-40 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
+                    title="Base URL of an OpenAI-compatible API, without the trailing /audio/transcriptions"
+                  />
+                )}
+                <input
+                  type="text"
+                  value={cloudModel}
+                  onChange={(event) => {
+                    setCloudModel(event.target.value);
+                    writeLocalStorage(cloudModelStorageKey(cloudProviderId), event.target.value);
+                  }}
+                  disabled={isTranscribing || transcriberBusyElsewhere}
+                  placeholder="model id"
+                  className="w-32 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
+                  title="The model id this provider expects, e.g. whisper-1 or whisper-large-v3-turbo"
+                />
+              </>
+            )}
             <button
-              onClick={() => onAutoTranscribe(language, modelId)}
-              disabled={isTranscribing || transcriberBusyElsewhere}
+              onClick={() => {
+                const request: TranscribeEngineRequest =
+                  engine === "local"
+                    ? { engine: "local", modelId }
+                    : {
+                        engine: "cloud",
+                        config: {
+                          provider: cloudProviderId,
+                          baseUrl:
+                            cloudProviderId === "custom"
+                              ? customBaseUrl.trim()
+                              : cloudProvider(cloudProviderId).baseUrl,
+                          apiKey: apiKey.trim(),
+                          model: cloudModel.trim(),
+                        },
+                      };
+                onAutoTranscribe(language, request);
+              }}
+              disabled={isTranscribing || transcriberBusyElsewhere || !cloudReady}
               className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
               title={
                 transcriberBusyElsewhere
                   ? "Another recording is currently being transcribed"
-                  : undefined
+                  : !cloudReady
+                    ? "Enter an API key (and base URL, for a custom provider) to use cloud transcription"
+                    : undefined
               }
             >
               {transcribeButtonLabel}

@@ -10,10 +10,12 @@ import { generateId } from "@/lib/id";
 import type {
   ModelFileProgress,
   TranscribeProgress,
+  TranscriptionResult,
   WorkerRequest,
   WorkerResponse,
 } from "@/lib/transcription/types";
-import type { TranscriptSegment } from "@/lib/types";
+
+export type { TranscriptionResult } from "@/lib/transcription/types";
 
 export type TranscriberStatus =
   | "idle"
@@ -21,14 +23,6 @@ export type TranscriberStatus =
   | "loading-model"
   | "transcribing"
   | "error";
-
-export interface TranscriptionResult {
-  segments: TranscriptSegment[];
-  /** Seconds of the clip that actually contained audible sound. */
-  speechSeconds: number;
-  /** Total length of the clip that was transcribed. */
-  audioSeconds: number;
-}
 
 interface PendingRequest {
   resolve: (result: TranscriptionResult) => void;

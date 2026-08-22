@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { TranscriberStatus } from "@/hooks/useTranscriber";
 import { downloadBlob, exportRecordingToZip } from "@/lib/exportImport";
 import { formatDateTime, formatDuration, sanitizeFileName } from "@/lib/mediaFormat";
+import type { TranscribeEngineRequest } from "@/lib/transcription/cloudProviders";
 import type { ModelFileProgress, TranscribeProgress } from "@/lib/transcription/types";
 import { sourceTypeLabel, type RecordingEntry, type TranscriptSegment } from "@/lib/types";
 import { TranscriptPanel } from "./TranscriptPanel";
@@ -14,7 +15,7 @@ interface Props {
   onDelete: (id: string) => Promise<void>;
   onUpdate: (id: string, patch: Partial<RecordingEntry>) => Promise<void>;
   onError: (message: string) => void;
-  onAutoTranscribe: (recording: RecordingEntry, language: string, modelId: string) => void;
+  onAutoTranscribe: (recording: RecordingEntry, language: string, request: TranscribeEngineRequest) => void;
   isTranscribing: boolean;
   transcriberBusyElsewhere: boolean;
   transcriberStatus: TranscriberStatus;
@@ -113,9 +114,9 @@ export function RecordingDetailModal({
     }
   }
 
-  function handleAutoTranscribeClick(language: string, modelId: string) {
+  function handleAutoTranscribeClick(language: string, request: TranscribeEngineRequest) {
     snapshotTranscriptForUndo();
-    onAutoTranscribe(recording, language, modelId);
+    onAutoTranscribe(recording, language, request);
   }
 
   async function removeTabLines() {

@@ -5,6 +5,8 @@ import { useRecordingsStore } from "@/hooks/useRecordingsStore";
 import { useToasts } from "@/hooks/useToasts";
 import { useTranscriber } from "@/hooks/useTranscriber";
 import { downloadBlob, exportRecordingsToZip, importZipFile } from "@/lib/exportImport";
+import { cloudProvider, type TranscribeEngineRequest } from "@/lib/transcription/cloudProviders";
+import { transcribeWithCloudProvider } from "@/lib/transcription/cloudTranscribe";
 import type { PendingSession, RecordingEntry, TranscriptSegment } from "@/lib/types";
 import { ActiveSessionCard } from "./ActiveSessionCard";
 import { BrowserWarningBanner } from "./BrowserWarningBanner";
@@ -62,7 +64,7 @@ export default function AppClient() {
   );
 
   const handleAutoTranscribe = useCallback(
-    async (recording: RecordingEntry, language: string, modelId: string) => {
+    async (recording: RecordingEntry, language: string, request: TranscribeEngineRequest) => {
       if (transcribingId) return;
       setTranscribingId(recording.id);
       try {
@@ -78,7 +80,9 @@ export default function AppClient() {
         const audioToTranscribe = isTabMerge ? recording.secondaryAudioBlob! : recording.audioBlob;
 
         const { segments: rawSegments, speechSeconds, audioSeconds } =
-          await transcriber.transcribe(audioToTranscribe, language, modelId);
+          request.engine === "local"
+            ? await transcriber.transcribe(audioToTranscribe, language, request.modelId)
+            : await transcribeWithCloudProvider(audioToTranscribe, language, request.config);
         const newSegments: TranscriptSegment[] = isTabMerge
           ? rawSegments.map((segment) => ({ ...segment, source: "tab" as const }))
           : rawSegments;
@@ -102,6 +106,16 @@ export default function AppClient() {
 
         if (newSegments.length === 0) {
           push("info", `No speech was detected in "${recording.label}".`);
+        } else if (request.engine === "cloud") {
+          // The stopped-early/quiet-tail heuristics below exist specifically
+          // to compensate for the local model's known coverage gaps (see
+          // whisper.worker.ts's gap sweep) — a hosted API doesn't share that
+          // failure mode and this path can't measure real speechSeconds, so
+          // just confirm the result instead of reusing those numbers.
+          push(
+            "success",
+            `Transcribed "${recording.label}" via ${cloudProvider(request.config.provider).label}.`,
+          );
         } else if (unaccountedSeconds > 8 && audioSeconds - speechSeconds < 5) {
           // There was sound right through the clip, yet the model stopped
           // early — it lost the thread rather than running out of audio.

@@ -83,6 +83,11 @@ the tab side can later be transcribed without mic speech tangled into the same a
 which stream is being recorded — `SpeechRecognition` never consumes the `MediaStream` at all,
 it always listens to the physical default microphone.
 
+`SpeechRecognition`/`SpeechRecognitionEvent`/etc. aren't part of TypeScript's `dom` lib, so
+`useRecordingSession.ts` wouldn't typecheck against the real Web Speech API without them.
+`types/speech-recognition.d.ts` declares them globally and is picked up automatically via
+tsconfig's `**/*.ts` include — extend that file (not a local cast) for another property.
+
 ### Transcription pipeline
 
 `lib/transcription/whisper.worker.ts` runs Whisper (`@huggingface/transformers`) in a Web
