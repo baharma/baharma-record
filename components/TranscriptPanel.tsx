@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriberStatus } from "@/hooks/useTranscriber";
 import { readLocalStorage, writeLocalStorage } from "@/lib/localStorage";
+import { TranscriptSourceBadge } from "./TranscriptSourceBadge";
 import { formatDuration } from "@/lib/mediaFormat";
 import { defaultSpeechLanguageCode, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
 import { formatRecordingTranscript } from "@/lib/transcriptFormat";
@@ -68,22 +69,6 @@ function progressLabel(
     return "Transcribing audio…";
   }
   return "Working…";
-}
-
-function sourceBadge(source: TranscriptSegment["source"]) {
-  if (!source) return null;
-  const isMic = source === "mic";
-  return (
-    <span
-      className={`mr-2 rounded px-1 py-0.5 text-[10px] font-semibold ${
-        isMic
-          ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400"
-          : "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400"
-      }`}
-    >
-      {isMic ? "MIC" : "TAB"}
-    </span>
-  );
 }
 
 export function TranscriptPanel({
@@ -338,7 +323,7 @@ export function TranscriptPanel({
                 <span className="mr-2 font-mono text-xs text-zinc-400">
                   {formatDuration(segment.time)}
                 </span>
-                {isMixed && sourceBadge(segment.source)}
+                {isMixed && <TranscriptSourceBadge source={segment.source} />}
                 {segment.text}
               </button>
             ))}
