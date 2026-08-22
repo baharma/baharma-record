@@ -119,15 +119,28 @@ export function startDeepgramLiveTranscription(
   };
 
   socket.onerror = () => {
-    handlers.onError(
-      "Live cloud transcription for tab audio hit a connection error — check the Deepgram API " +
-        "key. The recording itself continues normally; the tab audio can still be transcribed " +
-        'afterward with "Transcribe Tab Audio".',
-    );
+    // The WebSocket spec deliberately gives JS no detail on an "error"
+    // event (no status code, no message) — logging is the only use for it
+    // here. `onclose` always fires right after and carries the actual
+    // diagnostic info (code + reason), so that's where the user-facing
+    // message comes from.
+    console.error("Deepgram live transcription: WebSocket error event (see the close event for detail).");
   };
 
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     if (recorder && recorder.state !== "inactive") recorder.stop();
+    // Code 1000 is a normal closure — either our own stop() below, or
+    // Deepgram's own clean shutdown after it. Anything else means the
+    // connection ended unexpectedly, and event.reason is the one place
+    // Deepgram can actually tell us why (e.g. an invalid/expired key, a
+    // rejected parameter) — unlike the opaque "error" event above.
+    if (!stopped && event.code !== 1000) {
+      handlers.onError(
+        `Live cloud transcription for tab audio disconnected unexpectedly (code ${event.code}` +
+          `${event.reason ? `: ${event.reason}` : ""}). The recording itself continues ` +
+          'normally; the tab audio can still be transcribed afterward with "Transcribe Tab Audio".',
+      );
+    }
     endOnce();
   };
 
