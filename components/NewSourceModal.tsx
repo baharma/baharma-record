@@ -53,6 +53,12 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
   const displaySupported = isDisplayMediaSupported();
   const speechSupported = isSpeechRecognitionSupported();
   const videoSupported = isVideoRecordingSupported();
+  // Guards against the checkbox being left on with no key: without this,
+  // confirm() below just silently drops liveCloudTab and starts a normal
+  // recording — technically not an error, but confusing (the user thinks
+  // they'll get a live tab transcript and won't). Block "Start Recording"
+  // instead so the mismatch is obvious before the session starts.
+  const liveCloudTabMissingKey = liveCloudTabEnabled && deepgramApiKey.trim().length === 0;
 
   function pick(next: Choice) {
     setChoice(next);
@@ -292,18 +298,30 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
                       autoComplete="off"
                       className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
                     />
-                    <p className="mt-1 text-xs text-zinc-500">
-                      Sent directly from this browser to Deepgram — this app has no backend to
-                      hold it instead. The tab audio is always recorded normally regardless, so
-                      this can be left off and transcribed afterward instead.
-                    </p>
+                    {liveCloudTabMissingKey ? (
+                      <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                        Enter a Deepgram API key to continue, or turn this off — otherwise
+                        &quot;Start Recording&quot; below stays disabled. (Get a key from{" "}
+                        <span className="font-mono">console.deepgram.com</span> — a key from
+                        another service like OpenCode/OpenAI won&apos;t work here, this is
+                        specifically Deepgram&apos;s streaming API.)
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Sent directly from this browser to Deepgram — this app has no backend to
+                        hold it instead. The tab audio is always recorded normally regardless, so
+                        this can be left off and transcribed afterward instead.
+                      </p>
+                    )}
                   </>
                 )}
               </div>
             )}
 
             {(((choice === "mic" || choice === "both") && speechSupported) ||
-              ((choice === "tab" || choice === "both") && liveCloudTabEnabled)) && (
+              ((choice === "tab" || choice === "both") &&
+                liveCloudTabEnabled &&
+                !liveCloudTabMissingKey)) && (
               <>
                 <label className="mt-3 block text-xs text-zinc-500">
                   Language spoken (for live transcription)
@@ -328,7 +346,12 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
             <div className="mt-4 flex gap-2">
               <button
                 onClick={confirm}
-                disabled={busy}
+                disabled={busy || liveCloudTabMissingKey}
+                title={
+                  liveCloudTabMissingKey
+                    ? "Enter a Deepgram API key (or turn off live tab transcription) to continue"
+                    : undefined
+                }
                 className="flex-1 rounded-md bg-zinc-900 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
               >
                 {busy ? "Requesting access…" : "Start Recording"}

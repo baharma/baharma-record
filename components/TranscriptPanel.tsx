@@ -421,7 +421,7 @@ export function TranscriptPanel({
                     disabled={isTranscribing || transcriberBusyElsewhere}
                     placeholder="https://.../v1"
                     className="w-40 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
-                    title="Base URL of an OpenAI-compatible API, without the trailing /audio/transcriptions"
+                    title="Base URL of a provider with its own /audio/transcriptions (speech-to-text) endpoint, without that trailing path — a chat/completions-only API (e.g. most agentic coding gateways) won't work here"
                   />
                 )}
                 <input
