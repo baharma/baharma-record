@@ -7,14 +7,19 @@
  * architecture note), so the key necessarily lives in this browser's
  * localStorage and is sent directly to whichever endpoint is configured.
  *
- * All three options speak the same OpenAI-style multipart
+ * OpenAI, Groq, and "custom" all speak the same OpenAI-style multipart
  * `POST {baseUrl}/audio/transcriptions` shape (see cloudTranscribe.ts):
- * OpenAI and Groq both implement it natively (Groq's free tier makes it the
+ * OpenAI and Groq both implement it natively (Groq's free tier makes it a
  * practical "free" option here), and "custom" lets a user point at any other
  * compatible endpoint — a different vendor, a self-hosted server, a router —
- * without this app needing to special-case it.
+ * without this app needing to special-case it. Hugging Face's Inference API
+ * is the one exception: its request/response shape is entirely different
+ * (JSON with base64 audio, not multipart; model id in the URL path, not a
+ * form field) and gets its own code path in cloudTranscribe.ts — but it's
+ * included here as a preset for the same reason Groq is: a genuinely free
+ * tier, not just pay-as-you-go.
  */
-export type CloudProviderId = "openai" | "groq" | "custom";
+export type CloudProviderId = "openai" | "groq" | "huggingface" | "custom";
 
 export interface CloudProviderOption {
   id: CloudProviderId;
@@ -31,6 +36,12 @@ export const CLOUD_PROVIDERS: CloudProviderOption[] = [
     label: "Groq — has a free tier",
     baseUrl: "https://api.groq.com/openai/v1",
     defaultModel: "whisper-large-v3-turbo",
+  },
+  {
+    id: "huggingface",
+    label: "Hugging Face — free tier",
+    baseUrl: "https://router.huggingface.co/hf-inference/models",
+    defaultModel: "openai/whisper-large-v3",
   },
   { id: "custom", label: "Custom (OpenAI-compatible)", baseUrl: "", defaultModel: "whisper-1" },
 ];
