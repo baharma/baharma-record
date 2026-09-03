@@ -34,6 +34,23 @@ export const WHISPER_MODELS: WhisperModelOption[] = [
 
 export const DEFAULT_WHISPER_MODEL_ID = WHISPER_MODELS[0].id;
 
+/**
+ * The subset offered for *live* on-device transcription (see
+ * hooks/useLiveTranscriber.ts). "Small" is deliberately absent: live windows
+ * have to keep pace with the recording, and a model several times slower than
+ * "base" simply falls behind and builds a backlog that never drains. Even
+ * "base" is only realistic when the WebGPU backend is actually in use — the
+ * picker in NewSourceModal says so rather than hiding the trade.
+ */
+export const LIVE_WHISPER_MODELS = WHISPER_MODELS.filter((model) =>
+  model.id.endsWith("whisper-tiny") || model.id.endsWith("whisper-base"),
+);
+
+export const DEFAULT_LIVE_WHISPER_MODEL_ID = LIVE_WHISPER_MODELS[0].id;
+
+/** Which onnxruntime backend a pipeline actually ended up on. */
+export type InferenceDevice = "webgpu" | "wasm";
+
 export interface ModelFileProgress {
   file: string;
   status: string;
@@ -41,15 +58,31 @@ export interface ModelFileProgress {
   total?: number;
 }
 
-export type WorkerRequest = {
-  type: "transcribe";
-  requestId: string;
-  audio: Float32Array;
-  /** 2-letter Whisper language code, e.g. "id" — see lib/speechLanguage.ts. */
-  language: string;
-  /** One of WHISPER_MODELS' ids. */
-  modelId: string;
-};
+export type WorkerRequest =
+  | {
+      type: "transcribe";
+      requestId: string;
+      audio: Float32Array;
+      /** 2-letter Whisper language code, e.g. "id" — see lib/speechLanguage.ts. */
+      language: string;
+      /** One of WHISPER_MODELS' ids. */
+      modelId: string;
+    }
+  | {
+      /**
+       * One direct, uncushioned transcription pass over a short live window —
+       * see lib/transcription/localLive.ts. Skips speech-region splitting,
+       * gap-sweep recovery, and hallucination/repetition screening, all of
+       * which assume a whole clip; a live caller accepts that trade for low
+       * latency, and re-transcribing the full recording afterward (batch
+       * "transcribe") still gets the full treatment.
+       */
+      type: "transcribe-window";
+      requestId: string;
+      audio: Float32Array;
+      language: string;
+      modelId: string;
+    };
 
 /** How far through the clip transcription has got. */
 export interface TranscribeProgress {
@@ -72,7 +105,15 @@ export type WorkerResponse =
       /** Total length of the clip that was transcribed. */
       audioSeconds: number;
     }
-  | { type: "error"; requestId: string; message: string };
+  | { type: "error"; requestId: string; message: string }
+  | { type: "window-result"; requestId: string; text: string }
+  /**
+   * Which backend the live pipeline actually loaded on. WebGPU is attempted
+   * first and silently falls back to wasm where it isn't available, so this
+   * is the only way the UI can tell the user which one they got — which is
+   * exactly what decides whether a bigger live model is realistic.
+   */
+  | { type: "live-device"; requestId: string; device: InferenceDevice };
 
 /**
  * The common shape both transcription engines resolve to — the local worker

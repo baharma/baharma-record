@@ -22,7 +22,12 @@ export interface DecodedAudio {
   rms: number;
 }
 
-function measureLevels(samples: Float32Array): { peak: number; rms: number } {
+/**
+ * Peak/RMS of a sample buffer. Exported so lib/transcription/localLive.ts can
+ * apply the same SILENCE_PEAK_THRESHOLD check to each live window that the
+ * batch path already applies to a whole clip.
+ */
+export function measureLevels(samples: Float32Array): { peak: number; rms: number } {
   let peak = 0;
   let sumSquares = 0;
   for (let i = 0; i < samples.length; i++) {

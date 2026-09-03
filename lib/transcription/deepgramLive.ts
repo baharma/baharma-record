@@ -76,6 +76,8 @@ export function startDeepgramLiveTranscription(
   let recorder: MediaRecorder | null = null;
   let stopped = false;
   let ended = false;
+  /** Whether the connection ever established — see onclose for why it matters. */
+  let opened = false;
 
   function endOnce() {
     if (ended) return;
@@ -84,6 +86,7 @@ export function startDeepgramLiveTranscription(
   }
 
   socket.onopen = () => {
+    opened = true;
     if (stopped) return;
     recorder = new MediaRecorder(stream, { mimeType });
     recorder.ondataavailable = (event) => {
@@ -119,26 +122,39 @@ export function startDeepgramLiveTranscription(
   };
 
   socket.onerror = () => {
-    // The WebSocket spec deliberately gives JS no detail on an "error"
-    // event (no status code, no message) — logging is the only use for it
-    // here. `onclose` always fires right after and carries the actual
-    // diagnostic info (code + reason), so that's where the user-facing
-    // message comes from.
-    console.error("Deepgram live transcription: WebSocket error event (see the close event for detail).");
+    // The WebSocket spec deliberately gives JS no detail on an "error" event
+    // (no status code, no message), so there is nothing useful to report from
+    // here — `onclose` always fires right after and is where the actual
+    // diagnosis happens. Kept at warn rather than error precisely because it
+    // carries no information: at error level it trips Next's dev error
+    // overlay, interrupting the user with a message that by construction
+    // can't tell them anything.
+    console.warn("Deepgram live transcription: WebSocket error (detail follows in the close event).");
   };
 
   socket.onclose = (event) => {
     if (recorder && recorder.state !== "inactive") recorder.stop();
     // Code 1000 is a normal closure — either our own stop() below, or
-    // Deepgram's own clean shutdown after it. Anything else means the
-    // connection ended unexpectedly, and event.reason is the one place
-    // Deepgram can actually tell us why (e.g. an invalid/expired key, a
-    // rejected parameter) — unlike the opaque "error" event above.
+    // Deepgram's own clean shutdown after it.
     if (!stopped && event.code !== 1000) {
+      const detail = `code ${event.code}${event.reason ? `: ${event.reason}` : ""}`;
+      // Never having opened means the failure happened during the HTTP
+      // upgrade, before the WebSocket existed — which is how Deepgram rejects
+      // a bad key. Browsers deliberately hide that HTTP status (401/403) from
+      // page scripts, reporting only an opaque 1006 with no reason, so this
+      // has to be inferred rather than read. Saying so beats surfacing a bare
+      // "code 1006" the user can't act on.
       handlers.onError(
-        `Live cloud transcription for tab audio disconnected unexpectedly (code ${event.code}` +
-          `${event.reason ? `: ${event.reason}` : ""}). The recording itself continues ` +
-          'normally; the tab audio can still be transcribed afterward with "Transcribe Tab Audio".',
+        opened
+          ? `Live cloud transcription for tab audio disconnected mid-recording (${detail}). ` +
+              "The recording itself continues normally; the tab audio can still be transcribed " +
+              'afterward with "Transcribe Tab Audio".'
+          : `Live cloud transcription for tab audio couldn't connect to Deepgram (${detail}). ` +
+              "The connection was refused before it opened, which usually means the API key was " +
+              "rejected — check that it's a Deepgram key (not another service's), that it hasn't " +
+              "expired, and that the account still has credit. Browsers hide the real HTTP status " +
+              "from the page, so this can't be reported more precisely. The recording itself " +
+              "continues normally, and the on-device live option needs no key at all.",
       );
     }
     endOnce();

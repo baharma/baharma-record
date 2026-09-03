@@ -34,6 +34,7 @@ export function ActiveSessionCard({ session, onFinalized, onRemove, onWarning }:
       recognitionLang: session.recognitionLang,
       secondaryStream: session.secondaryStream,
       liveCloudTab: session.liveCloudTab,
+      localLiveTab: session.localLiveTab,
       extraCleanup: session.extraCleanup,
       onFinalized: handleFinalized,
       onWarning,

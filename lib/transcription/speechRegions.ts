@@ -20,8 +20,13 @@ export interface SpeechRegion {
 }
 
 const WINDOW_SECONDS = 0.03;
-/** Speech quieter than this (absolute) is never considered speech. */
-const ABSOLUTE_FLOOR = 0.006;
+/**
+ * Speech quieter than this (absolute) is never considered speech. Exported
+ * for lib/transcription/liveVad.ts, which needs the same absolute-floor
+ * rationale documented on findNextAudibleSample below but on a live,
+ * incrementally-arriving buffer rather than a whole clip.
+ */
+export const ABSOLUTE_FLOOR = 0.006;
 /** Speech must exceed the estimated noise floor by this factor. */
 const NOISE_FLOOR_MULTIPLE = 2.5;
 /** Silence shorter than this doesn't split a region (keeps sentences whole). */
@@ -37,7 +42,8 @@ const PAD_SECONDS = 0.25;
  */
 export const CONTINUOUS_SPEECH_RATIO = 0.7;
 
-function windowRms(samples: Float32Array, start: number, end: number): number {
+/** Exported for lib/transcription/liveVad.ts — same per-window energy math, live buffer. */
+export function windowRms(samples: Float32Array, start: number, end: number): number {
   let sumSquares = 0;
   for (let i = start; i < end; i++) sumSquares += samples[i] * samples[i];
   return Math.sqrt(sumSquares / Math.max(1, end - start));

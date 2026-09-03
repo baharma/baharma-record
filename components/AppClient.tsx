@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useLiveTranscriber } from "@/hooks/useLiveTranscriber";
 import { useRecordingsStore } from "@/hooks/useRecordingsStore";
 import { useToasts } from "@/hooks/useToasts";
 import { useTranscriber } from "@/hooks/useTranscriber";
@@ -22,6 +23,7 @@ export default function AppClient() {
   const store = useRecordingsStore();
   const { toasts, push, dismiss } = useToasts();
   const transcriber = useTranscriber();
+  const liveTranscriber = useLiveTranscriber();
   const [activeSessions, setActiveSessions] = useState<PendingSession[]>([]);
   const [showNewSourceModal, setShowNewSourceModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -233,6 +235,10 @@ export default function AppClient() {
           onClose={() => setShowNewSourceModal(false)}
           onSessionsCreated={handleSessionsCreated}
           onError={(message) => push("error", message)}
+          transcribeLocalWindow={liveTranscriber.transcribeWindow}
+          localModelLoading={liveTranscriber.isModelLoading}
+          localModelLoadProgress={liveTranscriber.loadProgress}
+          localDevice={liveTranscriber.device}
         />
       )}
 

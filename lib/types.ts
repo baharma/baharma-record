@@ -72,6 +72,26 @@ export interface PendingSession {
    */
   liveCloudTab?: { apiKey: string; language: string };
   /**
+   * "tab" or "mixed" sessions only: live *on-device* transcription of the
+   * tab-side audio — the free, no-API-key alternative to liveCloudTab above,
+   * using the app's own local Whisper pipeline instead of Deepgram. Mutually
+   * exclusive with liveCloudTab in the UI (NewSourceModal) since both would
+   * tag segments "tab" on the same timeline. `transcribeWindow` is the local
+   * live Whisper worker's request function (see hooks/useLiveTranscriber.ts)
+   * threaded down from AppClient, mirroring how `extraCleanup` below is
+   * already a function value living on this in-memory-only type.
+   */
+  localLiveTab?: {
+    language: string;
+    /** One of LIVE_WHISPER_MODELS' ids — picked in NewSourceModal, fixed for the session. */
+    modelId: string;
+    transcribeWindow: (
+      samples: Float32Array,
+      language: string,
+      modelId: string,
+    ) => Promise<{ text: string }>;
+  };
+  /**
    * For "mixed" (tab + mic) sessions: stops the original tab/mic streams
    * and closes the AudioContext used to mix them. `stream` itself is a
    * synthetic MediaStreamAudioDestinationNode output — stopping its track

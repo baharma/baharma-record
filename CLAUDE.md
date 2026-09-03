@@ -79,9 +79,12 @@ the Web Audio–mixed track (both sources summed via `AudioContext`/
 `MediaStreamAudioDestinationNode`) is the one saved as the recording's `audioBlob`; the raw,
 unmixed tab-only stream is recorded in parallel into `secondaryAudioBlob`, existing purely so
 the tab side can later be transcribed without mic speech tangled into the same audio (see
-`RecordingEntry.secondaryAudioBlob` in `lib/types.ts`). Live transcription is unaffected by
-which stream is being recorded — `SpeechRecognition` never consumes the `MediaStream` at all,
-it always listens to the physical default microphone.
+`RecordingEntry.secondaryAudioBlob` in `lib/types.ts`). Live transcription of the mic side is
+unaffected by which stream is being recorded — `SpeechRecognition` never consumes the
+`MediaStream` at all, it always listens to the physical default microphone. (The tab side can
+also get a live transcript now, but only through mechanisms entirely separate from
+`SpeechRecognition` — either Deepgram or the local Whisper worker; see "Live tab
+transcription" below.)
 
 `SpeechRecognition`/`SpeechRecognitionEvent`/etc. aren't part of TypeScript's `dom` lib, so
 `useRecordingSession.ts` wouldn't typecheck against the real Web Speech API without them.
@@ -175,11 +178,110 @@ UI", because transformers.js exposes none of Whisper's own anti-hallucination he
   uniform music yields *zero* regions, and a loud clip with a quieter tail drops the tail
   entirely).
 
-`TranscriptSegment.source` (`"mic" | "tab"`) only appears on segments from a "mixed"
-recording. The mic side comes from live `SpeechRecognition` results; the tab side is filled
-in on demand by "Transcribe Tab Audio", which transcribes `secondaryAudioBlob` and merges the
-result into the existing segments (replacing only previously-tagged `"tab"` segments, never
-touching `"mic"` ones) rather than overwriting the whole transcript.
+`TranscriptSegment.source` (`"mic" | "tab"`) tags which side a segment came from whenever a
+recording can have both: `"mic"` segments come from live `SpeechRecognition` results on
+"mixed" sessions; `"tab"` segments have three possible origins — live Deepgram transcription,
+live *local* Whisper transcription (both during a "tab"/"mixed" session, see below), or after
+the fact from "Transcribe Tab Audio" running Whisper/cloud batch transcription over
+`secondaryAudioBlob`. Any source of `"tab"` text merges into the existing segments by
+replacing only previously-tagged `"tab"` segments, never touching `"mic"` ones, rather than
+overwriting the whole transcript.
+
+### Cloud transcription & Settings
+
+Two independent, opt-in cloud integrations sit alongside the local Whisper pipeline above —
+both are pure client→provider calls (this app has no backend to proxy through), with API
+keys stored via `lib/localStorage.ts`'s guarded read/write wrappers under provider-specific
+keys defined in `lib/transcription/cloudProviders.ts` and `deepgramLive.ts`. Those same
+storage keys are read/written from three places — `NewSourceModal`'s and `TranscriptPanel`'s
+inline controls, and the centralized `SettingsModal` — so a key entered in any one shows up
+pre-filled in the others; `SettingsModal` is purely a convenience UI over the same state, not
+a separate source of truth, and skipping it to configure inline still works.
+
+- **Live tab transcription (Deepgram).** `lib/transcription/deepgramLive.ts` streams audio
+  over a `wss://api.deepgram.com/v1/listen` WebSocket, the one vendor-proprietary protocol in
+  the app (contrast the OpenAI-compatible shape below) — real-time streaming ASR doesn't have
+  a shared shape the way batch transcription does. It's one of the two ways tab audio can get
+  a transcript *live* (the other being the local path in "Live tab transcription" below),
+  since `SpeechRecognition` can never listen to anything but the physical
+  microphone (see the recording pipeline notes above). `useRecordingSession.ts` feeds it the
+  isolated tab-only signal — `secondaryStream` for "mixed" sessions, `stream` itself for
+  "tab" sessions (there is no secondary stream to isolate from) — never the mic-mixed track.
+  Browser WebSockets can't set custom headers, so the API key travels in the
+  `Sec-WebSocket-Protocol` list instead, per Deepgram's documented browser workaround.
+- **Cloud batch transcription.** An alternative *engine* for "Transcribe Audio"/"Transcribe
+  Tab Audio", chosen per run (`TranscribeEngineRequest`) alongside the existing local-model
+  picker in `TranscriptPanel`. OpenAI, Groq, and "custom" all speak the same OpenAI-style
+  multipart `POST {baseUrl}/audio/transcriptions` shape, handled by one function in
+  `lib/transcription/cloudTranscribe.ts`; Hugging Face's Inference API has an entirely
+  different shape (JSON body with base64 audio, model id in the URL path) and gets its own
+  code path there. Unlike the local path, no decode/silence-check/hallucination-screening
+  runs before a cloud request — a hosted API has its own signal handling, and re-decoding a
+  possibly hour-long recording just to inspect it first would defeat the point of offloading
+  the work.
+
+### Live tab transcription (local, on-device)
+
+The no-API-key alternative to Deepgram for the same job: a live transcript of the isolated tab
+signal, running the app's own Whisper worker instead of a hosted service. Picked in
+`NewSourceModal`'s three-way control (off / Deepgram / on-device), which is deliberately
+*exclusive* — both live paths tag their output `source: "tab"` on one timeline, so running
+both would just duplicate text. `PendingSession.localLiveTab` carries it into
+`useRecordingSession.ts`, which wires it exactly like the Deepgram session (own
+`localLiveEndedRef` gate in `tryFinalize`, same stale-instance guards) and feeds it the same
+isolated tab stream.
+
+Whisper is not a streaming model, so `lib/transcription/localLive.ts` fakes the effect: it
+taps raw 16kHz PCM off the stream via Web Audio (not `MediaRecorder` — no container to decode),
+cuts it into windows, and transcribes each one. Consequences worth knowing before changing any
+of it:
+
+- **Windows are cut by `lib/transcription/liveVad.ts`, not on a fixed timer.** Its threshold is
+  an adaptive noise floor, *not* `speechRegions.ts`'s absolute one: tab audio routinely carries
+  a music bed that never drops below an absolute floor, so an absolute threshold finds no
+  pauses at all and every window ends up cut by the `MAX_WINDOW_SECONDS` cap — mid-word, which
+  is exactly the input Whisper handles worst (measured on a talking-head video with background
+  music: every single cut was the cap). The floor also can't exceed a fraction of the recent
+  peak (`PEAK_TO_FLOOR_RATIO`), or capture starting mid-sentence seeds it at *speech* level and
+  the detector stays deaf until the first pause.
+- **Segments are stamped with when their audio was captured** (`VadWindow.startSeconds`),
+  never with arrival time the way the mic/Deepgram paths do. Local inference lands seconds
+  after the fact — plus a first-window wait for the model to load — so arrival stamps put
+  everything minutes late on the timeline.
+- **Sustained sound is rejected before the model runs**, on `VadWindow.dynamicRange` (ratio of
+  the window's loud frames to its quiet ones, against `MIN_SPEECH_DYNAMIC_RANGE`). This is the
+  live path's most important guard and the only one that can work at all here: fed music or
+  room tone, Whisper doesn't emit something visibly broken, it invents *fluent, plausible
+  dialogue*, which no text-level screen can tell from a real transcript. The measure is a
+  percentile ratio, deliberately not "how far frames dip below the median" — speech over a loud
+  music bed never dips far below its own median (the bed holds the floor up) and the dip
+  measure scored it identically to pure music, i.e. it silently dropped real speech. See the
+  measured table on that constant before retuning it, and note the guard only catches
+  *sustained* sound; music with real dynamics still reaches the model.
+- **The worker's `"transcribe-window"` branch skips the whole-clip machinery** (speech-region
+  splitting, gap sweep) since those need a complete recording to reason about — but it still
+  runs the two *per-line* screens, `isDegenerateRepetition` and `isNonSpeechArtifact`. Skipping
+  those was a real bug: without them the degenerate loop Whisper falls into on audio it can't
+  place goes straight to the transcript. The stock-phrase filter runs too, but on a different
+  rule than batch: it can't check whether a phrase is *isolated* among neighbours (there is no
+  "later" yet), so it uses the window's own duration instead — several seconds of audio
+  yielding nothing but "Terima kasih" is filler, while a genuine one arrives in a window barely
+  longer than the phrase takes to say (`STOCK_PHRASE_ISOLATION_SECONDS`).
+- **`useLiveTranscriber.ts` owns a second worker instance**, not the batch one: a batch
+  `"transcribe"` call is one uninterrupted await chain that can run for minutes, and live
+  windows can't queue behind it. Costs memory, not bandwidth (transformers.js caches weights in
+  the browser Cache API). No queue is needed inside it — `localLive.ts` never sends window N+1
+  before N resolves, so the "one ONNX session, no concurrent calls" rule holds by construction.
+- **The live path tries WebGPU first and falls back to wasm**; batch stays on wasm
+  deliberately (no deadline, and its long runs are likeliest to hit a GPU backend's rough
+  edges). This matters because the wasm backend is pinned to one thread, which is what makes
+  model size a real constraint live: `LIVE_WHISPER_MODELS` therefore offers only tiny/base
+  (never "small"), and the picker tells the user which backend they actually got, since that's
+  what decides whether "base" can keep pace.
+
+Even at its best this stays below the batch pass: every window is transcribed with no
+knowledge of the sentence before it. It's the trade for getting text during the meeting rather
+than after it.
 
 ### Data model & storage
 

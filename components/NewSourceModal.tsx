@@ -15,15 +15,35 @@ import {
 } from "@/lib/mediaAcquisition";
 import { defaultSpeechLanguageCode, speechRecognitionLocale, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
 import { DEEPGRAM_KEY_STORAGE_KEY } from "@/lib/transcription/deepgramLive";
+import {
+  DEFAULT_LIVE_WHISPER_MODEL_ID,
+  LIVE_WHISPER_MODELS,
+  type InferenceDevice,
+  type ModelFileProgress,
+} from "@/lib/transcription/types";
 import type { PendingSession } from "@/lib/types";
+
+const LIVE_MODEL_STORAGE_KEY = "baharma-record:live-whisper-model";
 
 type Choice = "tab" | "mic" | "both";
 type Step = "choose" | "label";
+/** Live transcription for tab-side audio: none, Deepgram (cloud), or the local Whisper worker. */
+type TabLiveMode = "none" | "cloud" | "local";
 
 interface Props {
   onClose: () => void;
   onSessionsCreated: (sessions: PendingSession[]) => void;
   onError: (message: string) => void;
+  /** Local on-device live transcription — see hooks/useLiveTranscriber.ts. */
+  transcribeLocalWindow: (
+    samples: Float32Array,
+    language: string,
+    modelId: string,
+  ) => Promise<{ text: string }>;
+  localModelLoading: boolean;
+  localModelLoadProgress: ModelFileProgress | null;
+  /** Which backend the local live model loaded on, once known. */
+  localDevice: InferenceDevice | null;
 }
 
 function defaultLabel(choice: Choice): string {
@@ -36,34 +56,50 @@ function defaultLabel(choice: Choice): string {
   return `Tab + Mic Recording – ${when}`;
 }
 
-export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
+export function NewSourceModal({
+  onClose,
+  onSessionsCreated,
+  onError,
+  transcribeLocalWindow,
+  localModelLoading,
+  localModelLoadProgress,
+  localDevice,
+}: Props) {
   const [step, setStep] = useState<Step>("choose");
   const [choice, setChoice] = useState<Choice | null>(null);
   const [label, setLabel] = useState("");
   const [language, setLanguage] = useState(() => defaultSpeechLanguageCode());
   const [includeVideo, setIncludeVideo] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Live cloud transcription (Deepgram) for tab audio — the one case
-  // SpeechRecognition can't help with. Opt-in and additive: leaving it off
-  // reproduces the exact existing behavior for "tab"/"both" sessions.
-  const [liveCloudTabEnabled, setLiveCloudTabEnabled] = useState(false);
+  // Live transcription for tab audio — the one case SpeechRecognition can't
+  // help with. Opt-in and additive: "none" reproduces the exact existing
+  // behavior for "tab"/"both" sessions. Cloud (Deepgram) and local (on-device
+  // Whisper) are mutually exclusive — both would tag segments "tab" on the
+  // same timeline, so running both at once would just double up text.
+  const [tabLiveMode, setTabLiveMode] = useState<TabLiveMode>("none");
   const [deepgramApiKey, setDeepgramApiKey] = useState(() => readLocalStorage(DEEPGRAM_KEY_STORAGE_KEY) ?? "");
+  const [liveModelId, setLiveModelId] = useState(() => {
+    const saved = readLocalStorage(LIVE_MODEL_STORAGE_KEY);
+    return LIVE_WHISPER_MODELS.some((model) => model.id === saved)
+      ? saved!
+      : DEFAULT_LIVE_WHISPER_MODEL_ID;
+  });
 
   const displaySupported = isDisplayMediaSupported();
   const speechSupported = isSpeechRecognitionSupported();
   const videoSupported = isVideoRecordingSupported();
-  // Guards against the checkbox being left on with no key: without this,
+  // Guards against "Deepgram" being picked with no key: without this,
   // confirm() below just silently drops liveCloudTab and starts a normal
   // recording — technically not an error, but confusing (the user thinks
   // they'll get a live tab transcript and won't). Block "Start Recording"
   // instead so the mismatch is obvious before the session starts.
-  const liveCloudTabMissingKey = liveCloudTabEnabled && deepgramApiKey.trim().length === 0;
+  const liveCloudTabMissingKey = tabLiveMode === "cloud" && deepgramApiKey.trim().length === 0;
 
   function pick(next: Choice) {
     setChoice(next);
     setLabel("");
     setIncludeVideo(false);
-    setLiveCloudTabEnabled(false);
+    setTabLiveMode("none");
     setStep("label");
   }
 
@@ -82,8 +118,12 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
       const recognitionLang = speechRecognitionLocale(language);
       const sessions: PendingSession[] = [];
       const liveCloudTab =
-        liveCloudTabEnabled && deepgramApiKey.trim().length > 0
+        tabLiveMode === "cloud" && deepgramApiKey.trim().length > 0
           ? { apiKey: deepgramApiKey.trim(), language }
+          : undefined;
+      const localLiveTab =
+        tabLiveMode === "local"
+          ? { language, modelId: liveModelId, transcribeWindow: transcribeLocalWindow }
           : undefined;
 
       if (choice === "tab") {
@@ -94,12 +134,13 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
           sourceType: "tab",
           label: baseLabel,
           stream: tabStream,
-          // Only "tab" sessions with live cloud transcription enabled get a
-          // transcript at all — the browser's own SpeechRecognition can't
-          // listen to tab audio, so without it there's nothing to save.
-          enableTranscript: Boolean(liveCloudTab),
+          // Only "tab" sessions with a live transcription option enabled get
+          // a transcript at all — the browser's own SpeechRecognition can't
+          // listen to tab audio, so without one there's nothing to save.
+          enableTranscript: Boolean(liveCloudTab) || Boolean(localLiveTab),
           recognitionLang,
           liveCloudTab,
+          localLiveTab,
         });
       } else if (choice === "mic") {
         const micStream = await acquireMicrophoneStream({ includeVideo });
@@ -147,9 +188,10 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
           // from the mix, and never carrying video even if includeVideo) so
           // "Transcribe Tab Audio" can later run Whisper on a clean signal —
           // see RecordingEntry.secondaryAudioBlob. The same isolated stream
-          // also feeds live cloud transcription, if enabled below.
+          // also feeds live tab transcription (cloud or local), if enabled.
           secondaryStream: new MediaStream(tabStream.getAudioTracks()),
           liveCloudTab,
+          localLiveTab,
           extraCleanup: () => {
             tabStream.getTracks().forEach((track) => track.stop());
             micStream.getTracks().forEach((track) => track.stop());
@@ -268,23 +310,46 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
             {choice === "tab" && (
               <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
                 ⚠️ Tab/window audio can&apos;t be auto-transcribed live by the browser itself —
-                its built-in speech recognition only listens to the microphone. Turn on live
-                cloud transcription below for a live transcript anyway, or transcribe it
+                its built-in speech recognition only listens to the microphone. Pick a live
+                transcription option below for a live transcript anyway, or transcribe it
                 automatically (or manually) after recording instead.
               </p>
             )}
 
             {(choice === "tab" || choice === "both") && (
               <div className="mt-3 rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={liveCloudTabEnabled}
-                    onChange={(event) => setLiveCloudTabEnabled(event.target.checked)}
-                  />
-                  Live transcript for tab audio (via Deepgram API key)
-                </label>
-                {liveCloudTabEnabled && (
+                <p className="text-sm font-medium">Live transcript for tab audio</p>
+                <div className="mt-1.5 flex flex-col gap-1.5">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="tabLiveMode"
+                      checked={tabLiveMode === "none"}
+                      onChange={() => setTabLiveMode("none")}
+                    />
+                    Off (transcribe afterward instead)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="tabLiveMode"
+                      checked={tabLiveMode === "cloud"}
+                      onChange={() => setTabLiveMode("cloud")}
+                    />
+                    Cloud, via Deepgram API key (most accurate)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="tabLiveMode"
+                      checked={tabLiveMode === "local"}
+                      onChange={() => setTabLiveMode("local")}
+                    />
+                    On-device, via this app&apos;s local Whisper model (free, no API key)
+                  </label>
+                </div>
+
+                {tabLiveMode === "cloud" && (
                   <>
                     <input
                       type="password"
@@ -299,11 +364,11 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
                     />
                     {liveCloudTabMissingKey ? (
                       <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                        Enter a Deepgram API key to continue, or turn this off — otherwise
-                        &quot;Start Recording&quot; below stays disabled. (Get a key from{" "}
-                        <span className="font-mono">console.deepgram.com</span> — a key from
-                        another service like OpenCode/OpenAI won&apos;t work here, this is
-                        specifically Deepgram&apos;s streaming API.)
+                        Enter a Deepgram API key to continue, or pick a different option above —
+                        otherwise &quot;Start Recording&quot; below stays disabled. (Get a key
+                        from <span className="font-mono">console.deepgram.com</span> — a key from
+                        another service like OpenAI won&apos;t work here, this is specifically
+                        Deepgram&apos;s streaming API.)
                       </p>
                     ) : (
                       <p className="mt-1 text-xs text-zinc-500">
@@ -314,13 +379,60 @@ export function NewSourceModal({ onClose, onSessionsCreated, onError }: Props) {
                     )}
                   </>
                 )}
+
+                {tabLiveMode === "local" && (
+                  <>
+                    <select
+                      value={liveModelId}
+                      onChange={(event) => {
+                        setLiveModelId(event.target.value);
+                        writeLocalStorage(LIVE_MODEL_STORAGE_KEY, event.target.value);
+                      }}
+                      className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+                    >
+                      {LIVE_WHISPER_MODELS.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label} ({model.sizeLabel})
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                      Runs this app&apos;s local Whisper model in short chunks as you record — free
+                      and fully on-device, but noticeably less accurate than Deepgram or a full
+                      after-the-fact transcription (each chunk is transcribed with little
+                      surrounding context), and keeps the CPU busy for the whole recording.
+                      {localDevice === "wasm" && (
+                        <>
+                          {" "}
+                          <strong>This browser is running it on the CPU</strong> (no WebGPU), where
+                          only the smallest model reliably keeps pace — a larger one may fall
+                          behind and lag further and further behind the audio.
+                        </>
+                      )}
+                      {localDevice === "webgpu" && (
+                        <> Running on the GPU (WebGPU), so a larger model is realistic here.</>
+                      )}
+                      {localModelLoading && (
+                        <>
+                          {" "}
+                          Downloading the model now (first time only
+                          {localModelLoadProgress?.total
+                            ? ` — ${Math.round(
+                                ((localModelLoadProgress.loaded ?? 0) / localModelLoadProgress.total) * 100,
+                              )}%`
+                            : ""}
+                          )…
+                        </>
+                      )}
+                    </p>
+                  </>
+                )}
               </div>
             )}
 
             {(((choice === "mic" || choice === "both") && speechSupported) ||
               ((choice === "tab" || choice === "both") &&
-                liveCloudTabEnabled &&
-                !liveCloudTabMissingKey)) && (
+                ((tabLiveMode === "cloud" && !liveCloudTabMissingKey) || tabLiveMode === "local"))) && (
               <>
                 <label className="mt-3 block text-xs text-zinc-500">
                   Language spoken (for live transcription)

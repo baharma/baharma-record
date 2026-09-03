@@ -5,7 +5,8 @@ import { generateId } from "@/lib/id";
 import { getSpeechRecognitionConstructor } from "@/lib/browserSupport";
 import { pickSupportedMimeType } from "@/lib/mediaFormat";
 import { startDeepgramLiveTranscription, type DeepgramLiveSession } from "@/lib/transcription/deepgramLive";
-import type { RecordingEntry, SourceType, TranscriptSegment } from "@/lib/types";
+import { startLocalLiveTranscription, type LocalLiveSession } from "@/lib/transcription/localLive";
+import type { PendingSession, RecordingEntry, SourceType, TranscriptSegment } from "@/lib/types";
 
 export type SessionStatus = "recording" | "stopping" | "stopped";
 
@@ -20,6 +21,8 @@ interface UseRecordingSessionOptions {
   secondaryStream?: MediaStream;
   /** See PendingSession.liveCloudTab. */
   liveCloudTab?: { apiKey: string; language: string };
+  /** See PendingSession.localLiveTab. */
+  localLiveTab?: PendingSession["localLiveTab"];
   /** See PendingSession.extraCleanup — invoked alongside stopping `stream`. */
   extraCleanup?: () => void;
   onFinalized: (entry: RecordingEntry) => void;
@@ -34,6 +37,7 @@ export function useRecordingSession({
   recognitionLang,
   secondaryStream,
   liveCloudTab,
+  localLiveTab,
   extraCleanup,
   onFinalized,
   onWarning,
@@ -54,6 +58,7 @@ export function useRecordingSession({
   /** Pending restart of live transcription after Chrome ended a session. */
   const recognitionRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deepgramSessionRef = useRef<DeepgramLiveSession | null>(null);
+  const localLiveSessionRef = useRef<LocalLiveSession | null>(null);
   const transcriptSegmentsRef = useRef<TranscriptSegment[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const finalizedRef = useRef(false);
@@ -70,6 +75,7 @@ export function useRecordingSession({
   const recognitionEndedRef = useRef(false);
   const secondaryRecorderStoppedRef = useRef(false);
   const deepgramEndedRef = useRef(true);
+  const localLiveEndedRef = useRef(true);
 
   const finalize = useCallback(() => {
     if (finalizedRef.current) return;
@@ -123,6 +129,7 @@ export function useRecordingSession({
     if (!recognitionEndedRef.current) return;
     if (!secondaryRecorderStoppedRef.current) return;
     if (!deepgramEndedRef.current) return;
+    if (!localLiveEndedRef.current) return;
     finalize();
   }, [finalize]);
 
@@ -143,6 +150,11 @@ export function useRecordingSession({
     }
     try {
       deepgramSessionRef.current?.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      localLiveSessionRef.current?.stop();
     } catch {
       // ignore
     }
@@ -172,6 +184,7 @@ export function useRecordingSession({
       recognitionEndedRef.current = true;
       secondaryRecorderStoppedRef.current = true;
       deepgramEndedRef.current = true;
+      localLiveEndedRef.current = true;
       tryFinalize();
     }, 2000);
 
@@ -181,15 +194,18 @@ export function useRecordingSession({
   // "tab" sessions have no secondaryStream (there's only the one tab-only
   // stream, which is `stream` itself); "mixed" sessions have both `stream`
   // (the recorded tab+mic mix) and `secondaryStream` (the isolated tab-only
-  // audio) — live cloud transcription always wants the isolated tab signal,
-  // never the mic-tangled mix.
-  const tabAudioStreamForLiveCloud = liveCloudTab
-    ? sourceType === "mixed"
-      ? secondaryStream
-      : sourceType === "tab"
-        ? stream
-        : undefined
-    : undefined;
+  // audio) — live tab transcription (cloud or on-device) always wants the
+  // isolated tab signal, never the mic-tangled mix. Shared between the two
+  // options below since they consume the identical value; each is still
+  // separately gated on its own option being set.
+  const tabAudioStreamForLiveTranscription =
+    liveCloudTab || localLiveTab
+      ? sourceType === "mixed"
+        ? secondaryStream
+        : sourceType === "tab"
+          ? stream
+          : undefined
+      : undefined;
 
   useEffect(() => {
     startTimeRef.current = Date.now();
@@ -200,10 +216,12 @@ export function useRecordingSession({
     recorderStoppedRef.current = false;
     secondaryRecorderStoppedRef.current = !secondaryStream;
     deepgramSessionRef.current = null;
-    // Nothing to wait for from recognition/live cloud tab transcription
-    // unless they actually start below.
+    localLiveSessionRef.current = null;
+    // Nothing to wait for from recognition/live tab transcription unless
+    // they actually start below.
     recognitionEndedRef.current = !enableTranscript;
-    deepgramEndedRef.current = !tabAudioStreamForLiveCloud;
+    deepgramEndedRef.current = !(tabAudioStreamForLiveTranscription && liveCloudTab);
+    localLiveEndedRef.current = !(tabAudioStreamForLiveTranscription && localLiveTab);
 
     const mimeType = pickSupportedMimeType(stream.getVideoTracks().length > 0);
     const recorder = new MediaRecorder(
@@ -375,9 +393,9 @@ export function useRecordingSession({
       }
     }
 
-    if (tabAudioStreamForLiveCloud && liveCloudTab) {
+    if (tabAudioStreamForLiveTranscription && liveCloudTab) {
       const session = startDeepgramLiveTranscription(
-        tabAudioStreamForLiveCloud,
+        tabAudioStreamForLiveTranscription,
         { apiKey: liveCloudTab.apiKey, language: liveCloudTab.language },
         {
           onFinal: (text) => {
@@ -411,6 +429,43 @@ export function useRecordingSession({
       deepgramSessionRef.current = session;
     }
 
+    if (tabAudioStreamForLiveTranscription && localLiveTab) {
+      const session = startLocalLiveTranscription(
+        tabAudioStreamForLiveTranscription,
+        {
+          language: localLiveTab.language,
+          modelId: localLiveTab.modelId,
+          transcribeWindow: localLiveTab.transcribeWindow,
+        },
+        {
+          onFinal: (text, startSeconds) => {
+            // Same stale-instance guard as the recorder/recognition/Deepgram
+            // callbacks above.
+            if (localLiveSessionRef.current !== session) return;
+            // Stamped with when the audio was captured, not Date.now() like
+            // the mic/Deepgram paths above: those deliver within a moment of
+            // the words being spoken, while a local window is only
+            // transcribed seconds later (see LocalLiveHandlers.onFinal).
+            transcriptSegmentsRef.current = [
+              ...transcriptSegmentsRef.current,
+              { time: startSeconds, text, source: "tab" as const },
+            ].sort((a, b) => a.time - b.time);
+            setTranscriptSegments(transcriptSegmentsRef.current);
+          },
+          onError: (message) => {
+            if (localLiveSessionRef.current !== session) return;
+            onWarning(message);
+          },
+          onEnded: () => {
+            if (localLiveSessionRef.current !== session) return;
+            localLiveEndedRef.current = true;
+            tryFinalize();
+          },
+        },
+      );
+      localLiveSessionRef.current = session;
+    }
+
     return () => {
       audioTrack?.removeEventListener("ended", handleTrackEnded);
       shouldRestartRecognitionRef.current = false;
@@ -426,6 +481,11 @@ export function useRecordingSession({
       }
       try {
         deepgramSessionRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        localLiveSessionRef.current?.stop();
       } catch {
         // ignore
       }
