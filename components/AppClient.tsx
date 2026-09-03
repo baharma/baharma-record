@@ -262,6 +262,18 @@ export default function AppClient() {
       )}
 
       <ToastStack toasts={toasts} onDismiss={dismiss} />
+
+      <footer className="mt-4 border-t border-zinc-200 pt-4 text-center text-xs text-zinc-500 dark:border-zinc-800">
+        Enjoying Baharma Record?{" "}
+        <a
+          href="https://trakteer.id/hsdgt2wyc4rbfudetkqv"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-zinc-700 underline hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
+        >
+          Support the developer on Trakteer
+        </a>
+      </footer>
     </main>
   );
 }
