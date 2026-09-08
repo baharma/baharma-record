@@ -16,17 +16,38 @@ export async function acquireTabAudioStream(
     );
   }
 
-  const displayStream = await navigator.mediaDevices.getDisplayMedia({
-    audio: true,
-    video: true,
-    // Chrome-specific hints (silently ignored elsewhere): keep the "share
-    // system/tab audio" checkbox available by default, don't offer this
-    // app's own tab as a shareable source, and let the user switch between
-    // tab/window/screen in the native dialog without re-prompting.
-    systemAudio: "include",
-    selfBrowserSurface: "exclude",
-    surfaceSwitching: "include",
-  } as DisplayMediaStreamOptions);
+  let displayStream: MediaStream;
+  try {
+    displayStream = await navigator.mediaDevices.getDisplayMedia({
+      audio: true,
+      video: true,
+      // Chrome-specific hints (silently ignored elsewhere): keep the "share
+      // system/tab audio" checkbox available by default, don't offer this
+      // app's own tab as a shareable source, and let the user switch between
+      // tab/window/screen in the native dialog without re-prompting.
+      systemAudio: "include",
+      selfBrowserSurface: "exclude",
+      surfaceSwitching: "include",
+    } as DisplayMediaStreamOptions);
+  } catch (error) {
+    // On macOS, once one screen/window share is active, the OS-level screen
+    // capture backend can lock up and reject a second concurrent
+    // getDisplayMedia() call with NotReadableError — this fires even though
+    // nothing else is actually "using" the source, so the generic
+    // NotReadableError message below (for mic devices) would be misleading
+    // here. Windows/individual Chrome tabs aren't affected by this lock, so
+    // that's the actionable workaround, not "close the other app".
+    if (error instanceof DOMException && error.name === "NotReadableError") {
+      throw new Error(
+        "Couldn't start this screen/window capture — macOS treats it as already in use, most " +
+          "likely because another screen share is already active in this browser. Try picking a " +
+          "specific Window or Chrome Tab instead of Entire Screen, or stop the other recording " +
+          "first. If it keeps happening, toggle Chrome off/on under System Settings → Privacy & " +
+          "Security → Screen Recording and relaunch Chrome.",
+      );
+    }
+    throw error;
+  }
 
   if (!options.includeVideo) {
     displayStream.getVideoTracks().forEach((track) => track.stop());
