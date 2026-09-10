@@ -167,8 +167,22 @@ export function NewSourceModal({
 
         audioContext = new AudioContext();
         const destination = audioContext.createMediaStreamDestination();
-        audioContext.createMediaStreamSource(tabStream).connect(destination);
+        const tabSource = audioContext.createMediaStreamSource(tabStream);
+        tabSource.connect(destination);
         audioContext.createMediaStreamSource(micStream).connect(destination);
+        // Isolated tab-only capture, fed from the *same* source node as the
+        // mix above rather than tabStream's raw hardware track. A
+        // MediaStreamAudioDestinationNode has real processing latency
+        // (render-quantum buffering inside the AudioContext graph); recording
+        // the raw track directly for the secondary stream had zero such
+        // latency, so tab audio in the primary (mixed) recording landed
+        // measurably later than the "same" audio in secondaryAudioBlob.
+        // Whisper's tab-transcript timestamps come from secondaryAudioBlob,
+        // so seeking the primary player to those timestamps landed before
+        // the words were actually spoken there. Sharing this source node
+        // keeps both destinations on identical graph timing.
+        const tabOnlyDestination = audioContext.createMediaStreamDestination();
+        tabSource.connect(tabOnlyDestination);
         const context = audioContext;
 
         // Primary recorded stream: mixed audio, plus the tab's video track
@@ -189,7 +203,9 @@ export function NewSourceModal({
           // "Transcribe Tab Audio" can later run Whisper on a clean signal —
           // see RecordingEntry.secondaryAudioBlob. The same isolated stream
           // also feeds live tab transcription (cloud or local), if enabled.
-          secondaryStream: new MediaStream(tabStream.getAudioTracks()),
+          // Sourced from tabOnlyDestination (see above), not tabStream
+          // directly, so it shares the mixed track's AudioContext latency.
+          secondaryStream: tabOnlyDestination.stream,
           liveCloudTab,
           localLiveTab,
           extraCleanup: () => {

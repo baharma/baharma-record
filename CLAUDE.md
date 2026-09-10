@@ -49,6 +49,14 @@ Component throws — hence the two-file split instead of one dynamic import in `
 
 ### Recording pipeline
 
+`lib/mediaAcquisition.ts` wraps `getDisplayMedia`/`getUserMedia` acquisition. On macOS, once
+one screen/window share is active, the OS-level capture backend can lock up and reject a
+*second* concurrent `getDisplayMedia()` call with `NotReadableError` even though nothing else
+is actually using the source — `acquireTabAudioStream` special-cases that error with a
+macOS-specific message (pick a specific Window/Tab instead of Entire Screen, or toggle Chrome's
+Screen Recording permission) rather than the generic "device already in use" wording, since the
+generic message is misleading for this case and doesn't point at the actual workaround.
+
 `hooks/useRecordingSession.ts` owns one live recording session end-to-end: it drives up to
 two parallel `MediaRecorder`s (see "mixed" sessions below) and, for mic-enabled sessions, a
 `SpeechRecognition` instance, and only calls `onFinalized` once every recorder/recognizer
