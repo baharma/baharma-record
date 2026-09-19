@@ -70,7 +70,7 @@ export interface PendingSession {
    * Segments arrive tagged "tab", merged by time into the same
    * transcriptSegments the mic side (if any) already populates.
    */
-  liveCloudTab?: { apiKey: string; language: string };
+  liveCloudTab?: { apiKeys: string[]; language: string };
   /**
    * "tab" or "mixed" sessions only: live *on-device* transcription of the
    * tab-side audio — the free, no-API-key alternative to liveCloudTab above,

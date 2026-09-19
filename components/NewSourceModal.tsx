@@ -14,7 +14,7 @@ import {
   friendlyErrorMessage,
 } from "@/lib/mediaAcquisition";
 import { defaultSpeechLanguageCode, speechRecognitionLocale, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
-import { DEEPGRAM_KEY_STORAGE_KEY } from "@/lib/transcription/deepgramLive";
+import { DEEPGRAM_KEY_STORAGE_KEY, parseDeepgramKeys } from "@/lib/transcription/deepgramLive";
 import {
   DEFAULT_LIVE_WHISPER_MODEL_ID,
   LIVE_WHISPER_MODELS,
@@ -93,7 +93,8 @@ export function NewSourceModal({
   // recording — technically not an error, but confusing (the user thinks
   // they'll get a live tab transcript and won't). Block "Start Recording"
   // instead so the mismatch is obvious before the session starts.
-  const liveCloudTabMissingKey = tabLiveMode === "cloud" && deepgramApiKey.trim().length === 0;
+  const deepgramKeys = parseDeepgramKeys(deepgramApiKey);
+  const liveCloudTabMissingKey = tabLiveMode === "cloud" && deepgramKeys.length === 0;
 
   function pick(next: Choice) {
     setChoice(next);
@@ -118,8 +119,8 @@ export function NewSourceModal({
       const recognitionLang = speechRecognitionLocale(language);
       const sessions: PendingSession[] = [];
       const liveCloudTab =
-        tabLiveMode === "cloud" && deepgramApiKey.trim().length > 0
-          ? { apiKey: deepgramApiKey.trim(), language }
+        tabLiveMode === "cloud" && deepgramKeys.length > 0
+          ? { apiKeys: deepgramKeys, language }
           : undefined;
       const localLiveTab =
         tabLiveMode === "local"
@@ -367,15 +368,16 @@ export function NewSourceModal({
 
                 {tabLiveMode === "cloud" && (
                   <>
-                    <input
-                      type="password"
+                    <textarea
                       value={deepgramApiKey}
                       onChange={(event) => {
                         setDeepgramApiKey(event.target.value);
                         writeLocalStorage(DEEPGRAM_KEY_STORAGE_KEY, event.target.value);
                       }}
-                      placeholder="Deepgram API key"
+                      placeholder="Deepgram API key(s) — one per line; the next is used automatically if one runs out"
+                      rows={2}
                       autoComplete="off"
+                      spellCheck={false}
                       className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
                     />
                     {liveCloudTabMissingKey ? (

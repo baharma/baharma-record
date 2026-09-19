@@ -20,7 +20,7 @@ interface UseRecordingSessionOptions {
   /** See PendingSession.secondaryStream — recorded in parallel, separately. */
   secondaryStream?: MediaStream;
   /** See PendingSession.liveCloudTab. */
-  liveCloudTab?: { apiKey: string; language: string };
+  liveCloudTab?: { apiKeys: string[]; language: string };
   /** See PendingSession.localLiveTab. */
   localLiveTab?: PendingSession["localLiveTab"];
   /** See PendingSession.extraCleanup — invoked alongside stopping `stream`. */
@@ -396,7 +396,7 @@ export function useRecordingSession({
     if (tabAudioStreamForLiveTranscription && liveCloudTab) {
       const session = startDeepgramLiveTranscription(
         tabAudioStreamForLiveTranscription,
-        { apiKey: liveCloudTab.apiKey, language: liveCloudTab.language },
+        { apiKeys: liveCloudTab.apiKeys, language: liveCloudTab.language },
         {
           onFinal: (text) => {
             // Same stale-instance guard as the recorder/recognition

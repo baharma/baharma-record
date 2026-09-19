@@ -29,7 +29,12 @@ export const DEEPGRAM_KEY_STORAGE_KEY = "baharma-record:deepgram-api-key";
  * live Deepgram account from this codebase's own test setup.
  */
 export interface DeepgramLiveOptions {
-  apiKey: string;
+  /**
+   * One or more keys, tried in order. When the connection with the current
+   * key fails (rejected, quota exhausted, dropped), the session reconnects
+   * with the next one on the same stream instead of ending.
+   */
+  apiKeys: string[];
   /** 2-letter language code, e.g. "en", "id" — see lib/speechLanguage.ts. */
   language: string;
   /** Deepgram model id. Defaults to "nova-2"; override if an account needs a different one. */
@@ -45,6 +50,11 @@ export interface DeepgramLiveHandlers {
   onEnded: () => void;
 }
 
+/** Splits a pasted list of keys (one per line, or comma/space separated) into distinct non-empty keys. */
+export function parseDeepgramKeys(raw: string): string[] {
+  return [...new Set(raw.split(/[\s,;]+/).map((key) => key.trim()).filter(Boolean))];
+}
+
 export interface DeepgramLiveSession {
   stop: () => void;
 }
@@ -55,7 +65,12 @@ export function startDeepgramLiveTranscription(
   handlers: DeepgramLiveHandlers,
 ): DeepgramLiveSession {
   const mimeType = pickSupportedMimeType();
-  if (!mimeType || typeof MediaRecorder === "undefined" || typeof WebSocket === "undefined") {
+  if (
+    options.apiKeys.length === 0 ||
+    !mimeType ||
+    typeof MediaRecorder === "undefined" ||
+    typeof WebSocket === "undefined"
+  ) {
     handlers.onError("This browser can't stream audio for live cloud transcription.");
     handlers.onEnded();
     return { stop: () => {} };
@@ -68,16 +83,13 @@ export function startDeepgramLiveTranscription(
     punctuate: "true",
     smart_format: "true",
   });
-  const socket = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, [
-    "token",
-    options.apiKey,
-  ]);
+  const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`;
+  const keys = options.apiKeys;
 
-  let recorder: MediaRecorder | null = null;
+  let socket: WebSocket | null = null;
+  let activeRecorder: MediaRecorder | null = null;
   let stopped = false;
   let ended = false;
-  /** Whether the connection ever established — see onclose for why it matters. */
-  let opened = false;
 
   function endOnce() {
     if (ended) return;
@@ -85,89 +97,115 @@ export function startDeepgramLiveTranscription(
     handlers.onEnded();
   }
 
-  socket.onopen = () => {
-    opened = true;
-    if (stopped) return;
-    recorder = new MediaRecorder(stream, { mimeType });
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0 && socket.readyState === WebSocket.OPEN) {
-        socket.send(event.data);
+  function connect(keyIndex: number) {
+    const ws = new WebSocket(url, ["token", keys[keyIndex]]);
+    socket = ws;
+    let recorder: MediaRecorder | null = null;
+    /** Whether the connection ever established — see onclose for why it matters. */
+    let opened = false;
+
+    ws.onopen = () => {
+      opened = true;
+      if (stopped) return;
+      recorder = new MediaRecorder(stream, { mimeType: mimeType! });
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+          ws.send(event.data);
+        }
+      };
+      // Small chunks for low latency — this is a live preview, not the
+      // recording of record (that's the separate secondary MediaRecorder in
+      // useRecordingSession.ts, reading the same stream in parallel).
+      // A fresh recorder per connection also means each socket's first chunk
+      // carries the container header Deepgram needs to decode the stream.
+      activeRecorder = recorder;
+      recorder.start(250);
+    };
+
+    ws.onmessage = (event) => {
+      let data: unknown;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (!data || typeof data !== "object" || (data as { type?: string }).type !== "Results") return;
+      const result = data as {
+        is_final?: boolean;
+        channel?: { alternatives?: { transcript?: string }[] };
+      };
+      const transcript = result.channel?.alternatives?.[0]?.transcript ?? "";
+      if (!transcript) return;
+      if (result.is_final) {
+        handlers.onFinal(transcript.trim());
+      } else {
+        handlers.onInterim(transcript);
       }
     };
-    // Small chunks for low latency — this is a live preview, not the
-    // recording of record (that's the separate secondary MediaRecorder in
-    // useRecordingSession.ts, reading the same stream in parallel).
-    recorder.start(250);
-  };
 
-  socket.onmessage = (event) => {
-    let data: unknown;
-    try {
-      data = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-    if (!data || typeof data !== "object" || (data as { type?: string }).type !== "Results") return;
-    const result = data as {
-      is_final?: boolean;
-      channel?: { alternatives?: { transcript?: string }[] };
+    ws.onerror = () => {
+      // The WebSocket spec deliberately gives JS no detail on an "error" event
+      // (no status code, no message), so there is nothing useful to report from
+      // here — `onclose` always fires right after and is where the actual
+      // diagnosis happens. Kept at warn rather than error precisely because it
+      // carries no information: at error level it trips Next's dev error
+      // overlay, interrupting the user with a message that by construction
+      // can't tell them anything.
+      console.warn("Deepgram live transcription: WebSocket error (detail follows in the close event).");
     };
-    const transcript = result.channel?.alternatives?.[0]?.transcript ?? "";
-    if (!transcript) return;
-    if (result.is_final) {
-      handlers.onFinal(transcript.trim());
-    } else {
-      handlers.onInterim(transcript);
-    }
-  };
 
-  socket.onerror = () => {
-    // The WebSocket spec deliberately gives JS no detail on an "error" event
-    // (no status code, no message), so there is nothing useful to report from
-    // here — `onclose` always fires right after and is where the actual
-    // diagnosis happens. Kept at warn rather than error precisely because it
-    // carries no information: at error level it trips Next's dev error
-    // overlay, interrupting the user with a message that by construction
-    // can't tell them anything.
-    console.warn("Deepgram live transcription: WebSocket error (detail follows in the close event).");
-  };
+    ws.onclose = (event) => {
+      if (recorder && recorder.state !== "inactive") recorder.stop();
+      // Code 1000 is a normal closure — either our own stop() below, or
+      // Deepgram's own clean shutdown after it.
+      if (!stopped && event.code !== 1000) {
+        const detail = `code ${event.code}${event.reason ? `: ${event.reason}` : ""}`;
+        // Fail over to the next key, if any: a rejected or out-of-credit key
+        // and a dropped connection look alike from here, and either way the
+        // next key is the best available recovery.
+        if (keyIndex + 1 < keys.length) {
+          handlers.onError(
+            `Deepgram key ${keyIndex + 1} of ${keys.length} failed (${detail}); ` +
+              `switched to key ${keyIndex + 2}.`,
+          );
+          connect(keyIndex + 1);
+          return;
+        }
+        // Never having opened means the failure happened during the HTTP
+        // upgrade, before the WebSocket existed — which is how Deepgram rejects
+        // a bad key. Browsers deliberately hide that HTTP status (401/403) from
+        // page scripts, reporting only an opaque 1006 with no reason, so this
+        // has to be inferred rather than read. Saying so beats surfacing a bare
+        // "code 1006" the user can't act on.
+        handlers.onError(
+          opened
+            ? `Live cloud transcription for tab audio disconnected mid-recording (${detail}). ` +
+                "The recording itself continues normally; the tab audio can still be transcribed " +
+                'afterward with "Transcribe Tab Audio".'
+            : `Live cloud transcription for tab audio couldn't connect to Deepgram (${detail}). ` +
+                "The connection was refused before it opened, which usually means the API key was " +
+                "rejected — check that it's a Deepgram key (not another service's), that it hasn't " +
+                "expired, and that the account still has credit. Browsers hide the real HTTP status " +
+                "from the page, so this can't be reported more precisely. The recording itself " +
+                "continues normally, and the on-device live option needs no key at all.",
+        );
+      }
+      endOnce();
+    };
+  }
 
-  socket.onclose = (event) => {
-    if (recorder && recorder.state !== "inactive") recorder.stop();
-    // Code 1000 is a normal closure — either our own stop() below, or
-    // Deepgram's own clean shutdown after it.
-    if (!stopped && event.code !== 1000) {
-      const detail = `code ${event.code}${event.reason ? `: ${event.reason}` : ""}`;
-      // Never having opened means the failure happened during the HTTP
-      // upgrade, before the WebSocket existed — which is how Deepgram rejects
-      // a bad key. Browsers deliberately hide that HTTP status (401/403) from
-      // page scripts, reporting only an opaque 1006 with no reason, so this
-      // has to be inferred rather than read. Saying so beats surfacing a bare
-      // "code 1006" the user can't act on.
-      handlers.onError(
-        opened
-          ? `Live cloud transcription for tab audio disconnected mid-recording (${detail}). ` +
-              "The recording itself continues normally; the tab audio can still be transcribed " +
-              'afterward with "Transcribe Tab Audio".'
-          : `Live cloud transcription for tab audio couldn't connect to Deepgram (${detail}). ` +
-              "The connection was refused before it opened, which usually means the API key was " +
-              "rejected — check that it's a Deepgram key (not another service's), that it hasn't " +
-              "expired, and that the account still has credit. Browsers hide the real HTTP status " +
-              "from the page, so this can't be reported more precisely. The recording itself " +
-              "continues normally, and the on-device live option needs no key at all.",
-      );
-    }
-    endOnce();
-  };
+  connect(0);
 
   return {
     stop: () => {
       if (stopped) return;
       stopped = true;
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-      if (socket.readyState === WebSocket.OPEN) {
+      if (activeRecorder && activeRecorder.state !== "inactive") activeRecorder.stop();
+      const ws = socket;
+      if (!ws) return;
+      if (ws.readyState === WebSocket.OPEN) {
         try {
-          socket.send(JSON.stringify({ type: "CloseStream" }));
+          ws.send(JSON.stringify({ type: "CloseStream" }));
         } catch {
           // ignore
         }
@@ -176,10 +214,10 @@ export function startDeepgramLiveTranscription(
         // finalize race useRecordingSession.ts's recorder/recognition
         // handling guards against.
         setTimeout(() => {
-          if (socket.readyState === WebSocket.OPEN) socket.close();
+          if (ws.readyState === WebSocket.OPEN) ws.close();
         }, 1500);
       } else {
-        socket.close();
+        ws.close();
       }
     },
   };

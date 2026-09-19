@@ -84,18 +84,19 @@ export function SettingsModal({ onClose }: Props) {
         <section className="mt-4">
           <h3 className="text-sm font-semibold">Live Tab Transcription</h3>
           <p className="mt-0.5 text-xs text-zinc-500">
-            Deepgram API key — used when &quot;Live transcript for tab audio&quot; is turned on
+            Deepgram API key(s), one per line — if one fails or runs out of credit, the next is used automatically. Used when &quot;Live transcript for tab audio&quot; is turned on
             while starting a new Tab or Tab + Mic recording.
           </p>
-          <input
-            type="password"
+          <textarea
             value={deepgramApiKey}
             onChange={(event) => {
               setDeepgramApiKey(event.target.value);
               writeLocalStorage(DEEPGRAM_KEY_STORAGE_KEY, event.target.value);
             }}
-            placeholder="Deepgram API key"
+            placeholder="Deepgram API key(s) — one per line"
+            rows={3}
             autoComplete="off"
+            spellCheck={false}
             className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
           />
         </section>
