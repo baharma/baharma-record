@@ -9,6 +9,7 @@ import { TranscriptSourceBadge } from "./TranscriptSourceBadge";
 interface Props {
   session: PendingSession;
   onFinalized: (entry: RecordingEntry) => void;
+  onSnapshot: (entry: RecordingEntry) => void;
   onRemove: (id: string) => void;
   onWarning: (message: string) => void;
 }
@@ -16,7 +17,7 @@ interface Props {
 /** How close to the bottom (px) still counts as "following the live feed". */
 const STICK_TO_BOTTOM_THRESHOLD = 24;
 
-export function ActiveSessionCard({ session, onFinalized, onRemove, onWarning }: Props) {
+export function ActiveSessionCard({ session, onFinalized, onSnapshot, onRemove, onWarning }: Props) {
   const handleFinalized = useCallback(
     (entry: RecordingEntry) => {
       onFinalized(entry);
@@ -37,6 +38,7 @@ export function ActiveSessionCard({ session, onFinalized, onRemove, onWarning }:
       localLiveTab: session.localLiveTab,
       extraCleanup: session.extraCleanup,
       onFinalized: handleFinalized,
+      onSnapshot,
       onWarning,
     });
 

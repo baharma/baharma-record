@@ -26,6 +26,12 @@ interface UseRecordingSessionOptions {
   /** See PendingSession.extraCleanup — invoked alongside stopping `stream`. */
   extraCleanup?: () => void;
   onFinalized: (entry: RecordingEntry) => void;
+  /**
+   * Persist a partial recording without ending the session — called when the
+   * page is being left mid-recording. Must overwrite by `entry.id`, so the
+   * normal finalize (if the page survives) replaces it rather than duplicating.
+   */
+  onSnapshot?: (entry: RecordingEntry) => void;
   onWarning: (message: string) => void;
 }
 
@@ -40,6 +46,7 @@ export function useRecordingSession({
   localLiveTab,
   extraCleanup,
   onFinalized,
+  onSnapshot,
   onWarning,
 }: UseRecordingSessionOptions) {
   const [status, setStatus] = useState<SessionStatus>("recording");
@@ -62,6 +69,9 @@ export function useRecordingSession({
   const transcriptSegmentsRef = useRef<TranscriptSegment[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const finalizedRef = useRef(false);
+  // Stable for the whole session so a snapshot saved on page exit and the
+  // eventual finalize write the same IndexedDB record.
+  const [entryId] = useState(generateId);
   const stoppingRef = useRef(false);
   const shouldRestartRecognitionRef = useRef(false);
   // MediaRecorder.stop() and SpeechRecognition.stop() both resolve
@@ -77,15 +87,7 @@ export function useRecordingSession({
   const deepgramEndedRef = useRef(true);
   const localLiveEndedRef = useRef(true);
 
-  const finalize = useCallback(() => {
-    if (finalizedRef.current) return;
-    finalizedRef.current = true;
-
-    if (timerRef.current !== null) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-
+  const buildEntry = useCallback((): RecordingEntry => {
     const hasVideo = stream.getVideoTracks().length > 0;
     const mimeType =
       mediaRecorderRef.current?.mimeType || (hasVideo ? "video/webm" : "audio/webm");
@@ -101,8 +103,8 @@ export function useRecordingSession({
         ? new Blob(secondaryChunksRef.current, { type: secondaryMimeType })
         : null;
 
-    const entry: RecordingEntry = {
-      id: generateId(),
+    return {
+      id: entryId,
       label,
       sourceType,
       createdAt: startTimeRef.current,
@@ -115,10 +117,21 @@ export function useRecordingSession({
       secondaryAudioBlob,
       secondaryAudioMimeType: secondaryAudioBlob ? secondaryMimeType : null,
     };
+  }, [entryId, label, sourceType, enableTranscript, secondaryStream, stream]);
 
+  const finalize = useCallback(() => {
+    if (finalizedRef.current) return;
+    finalizedRef.current = true;
+
+    if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    const entry = buildEntry();
     setStatus("stopped");
     onFinalized(entry);
-  }, [label, sourceType, enableTranscript, secondaryStream, onFinalized, stream]);
+  }, [buildEntry, onFinalized]);
 
   // Only finalize once a real stop was requested AND every recorder/
   // recognizer that was actually running has actually finished — never on
@@ -504,6 +517,25 @@ export function useRecordingSession({
       // only place that should ever stop the stream's tracks.
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The page can be left mid-recording without the user meaning to (a
+  // trackpad back-swipe, an accidental reload). Nothing async survives that —
+  // MediaRecorder.stop() would never deliver its final event — so save what
+  // has been captured so far, synchronously, straight from the chunk buffers
+  // (at most ~1s stale, the recorder's timeslice). Latest values live in a ref
+  // because the mount effect's closure is captured once.
+  const snapshotRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    snapshotRef.current = () => {
+      if (finalizedRef.current || chunksRef.current.length === 0) return;
+      onSnapshot?.(buildEntry());
+    };
+  }, [onSnapshot, buildEntry]);
+  useEffect(() => {
+    const handlePageHide = () => snapshotRef.current();
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
   }, []);
 
   return { status, elapsedSeconds, transcriptSegments, interimText, tabInterimText, stop };

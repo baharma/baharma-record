@@ -82,6 +82,16 @@ comments:
   (throws `InvalidStateError` — the old session is still tearing down); restart a fresh
   instance on a short delay instead, with backoff on repeated failure.
 
+**Leaving the page mid-recording** (trackpad back-swipe, accidental reload) is guarded in two
+layers. `AppClient` pushes a sentinel history entry while any session is active and re-pushes
+it on every `popstate`, so "back" stays on the page, and adds a `beforeunload` prompt. If the
+page is still torn down, the hook's `pagehide` handler builds an entry *synchronously* from
+`chunksRef` (`MediaRecorder.stop()` is async and never delivers its event during unload) and
+passes it to `onSnapshot`, which `AppClient` writes via `store.addRecording` without a toast.
+The entry id is fixed per session (`entryId`), so a later normal finalize overwrites the
+snapshot rather than duplicating it. Saving on `pagehide` is best-effort — browsers don't
+guarantee the IndexedDB write completes.
+
 **"Mixed" (Tab + Mic Simultaneously) sessions** record two streams from one hook instance:
 the Web Audio–mixed track (both sources summed via `AudioContext`/
 `MediaStreamAudioDestinationNode`) is the one saved as the recording's `audioBlob`; the raw,
@@ -215,7 +225,9 @@ a separate source of truth, and skipping it to configure inline still works.
   microphone (see the recording pipeline notes above). `useRecordingSession.ts` feeds it the
   isolated tab-only signal — `secondaryStream` for "mixed" sessions, `stream` itself for
   "tab" sessions (there is no secondary stream to isolate from) — never the mic-mixed track.
-  Browser WebSockets can't set custom headers, so the API key travels in the
+  The stored value is a newline-joined list of keys (`parseDeepgramKeys`; a legacy single
+  key still loads), edited through `components/DeepgramKeysField.tsx` in both
+  `NewSourceModal` and `SettingsModal`. Browser WebSockets can't set custom headers, so the API key travels in the
   `Sec-WebSocket-Protocol` list instead, per Deepgram's documented browser workaround.
 - **Cloud batch transcription.** An alternative *engine* for "Transcribe Audio"/"Transcribe
   Tab Audio", chosen per run (`TranscribeEngineRequest`) alongside the existing local-model
@@ -295,7 +307,10 @@ than after it.
 
 `lib/types.ts` defines `RecordingEntry` (the IndexedDB record) and `PendingSession` (a live,
 not-yet-saved recording). `hooks/useRecordingsStore.ts` wraps `lib/db.ts` (a thin `idb`
-wrapper) and is the only place that talks to IndexedDB directly. `lib/exportImport.ts`
+wrapper) and is the only place that talks to IndexedDB directly. `hooks/useStorageEstimate.ts`
+sums the recordings' blob sizes for the displayed usage instead of trusting
+`navigator.storage.estimate().usage`, which lags real writes/deletes in Chromium (only
+`quota` is read from the Storage API). `lib/exportImport.ts`
 (JSZip) and `lib/transcriptFormat.ts` both read/write `RecordingEntry`/`TranscriptSegment`
 shapes — the exported `transcript.txt` and the in-app "Copy Transcript" button share
 `lib/transcriptFormat.ts`'s single formatter so the two outputs can't drift apart.

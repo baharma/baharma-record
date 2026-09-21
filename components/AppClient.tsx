@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useLiveTranscriber } from "@/hooks/useLiveTranscriber";
 import { useRecordingsStore } from "@/hooks/useRecordingsStore";
 import { useToasts } from "@/hooks/useToasts";
@@ -51,6 +51,38 @@ export default function AppClient() {
     },
     [store, push],
   );
+
+  // Written on page exit, so no toast and no awaiting — the page is going away.
+  const handleSessionSnapshot = useCallback(
+    (entry: RecordingEntry) => {
+      void store.addRecording(entry).catch(() => {});
+    },
+    [store],
+  );
+
+  // Guard against leaving mid-recording by accident. A trackpad back-swipe
+  // navigates within history: park a sentinel entry on top and re-push it on
+  // every popstate so "back" lands on the sentinel and stays here. The
+  // beforeunload prompt covers reload/close/leaving the site.
+  const isRecording = activeSessions.length > 0;
+  useEffect(() => {
+    if (!isRecording) return;
+    window.history.pushState({ recordingGuard: true }, "");
+    const handlePopState = () => {
+      window.history.pushState({ recordingGuard: true }, "");
+      push("info", "Recording in progress — stop it first to leave this page.");
+    };
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("popstate", handlePopState);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [isRecording, push]);
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -220,6 +252,7 @@ export default function AppClient() {
                 key={session.id}
                 session={session}
                 onFinalized={handleSessionFinalized}
+                onSnapshot={handleSessionSnapshot}
                 onRemove={handleSessionRemove}
                 onWarning={(message) => push("info", message)}
               />
