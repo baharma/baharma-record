@@ -29,6 +29,21 @@ export function useStorageEstimate(recordings: RecordingEntry[]): StorageEstimat
   useEffect(() => {
     let cancelled = false;
 
+    // Storage is "best-effort" by default: under disk pressure Chrome may
+    // evict the whole origin (recordings in IndexedDB, saved API keys, and the
+    // Whisper model cache alike) with no warning. Asking for persistence
+    // exempts it from that; Chrome grants it silently based on site
+    // engagement, so a refusal is harmless and just leaves the default.
+    async function requestPersistence() {
+      try {
+        if (navigator.storage?.persist && !(await navigator.storage.persisted())) {
+          await navigator.storage.persist();
+        }
+      } catch {
+        // ignore — storage stays best-effort
+      }
+    }
+
     async function loadQuota() {
       if (typeof navigator === "undefined" || !navigator.storage?.estimate) {
         return;
@@ -43,6 +58,7 @@ export function useStorageEstimate(recordings: RecordingEntry[]): StorageEstimat
       }
     }
 
+    requestPersistence();
     loadQuota();
     return () => {
       cancelled = true;

@@ -14,6 +14,7 @@ import {
   friendlyErrorMessage,
 } from "@/lib/mediaAcquisition";
 import { defaultSpeechLanguageCode, speechRecognitionLocale, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
+import DeepgramKeysField from "./DeepgramKeysField";
 import { DEEPGRAM_KEY_STORAGE_KEY, parseDeepgramKeys } from "@/lib/transcription/deepgramLive";
 import {
   DEFAULT_LIVE_WHISPER_MODEL_ID,
@@ -368,17 +369,12 @@ export function NewSourceModal({
 
                 {tabLiveMode === "cloud" && (
                   <>
-                    <textarea
+                    <DeepgramKeysField
                       value={deepgramApiKey}
-                      onChange={(event) => {
-                        setDeepgramApiKey(event.target.value);
-                        writeLocalStorage(DEEPGRAM_KEY_STORAGE_KEY, event.target.value);
+                      onChange={(next) => {
+                        setDeepgramApiKey(next);
+                        writeLocalStorage(DEEPGRAM_KEY_STORAGE_KEY, next);
                       }}
-                      placeholder="Deepgram API key(s) — one per line; the next is used automatically if one runs out"
-                      rows={2}
-                      autoComplete="off"
-                      spellCheck={false}
-                      className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
                     />
                     {liveCloudTabMissingKey ? (
                       <p className="mt-1 text-xs text-red-600 dark:text-red-400">
