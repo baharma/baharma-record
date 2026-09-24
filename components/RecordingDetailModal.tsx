@@ -237,6 +237,10 @@ export function RecordingDetailModal({
           </button>
         </div>
 
+        {/* Video + transcript share one scroll area: with the video pinned above
+            a flex-1 transcript, a tall video squeezed the transcript (and its
+            controls) to nothing inside an overflow-hidden modal. */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="border-b border-zinc-200 p-4 dark:border-zinc-800">
           {audioUrl &&
             (hasVideo ? (
@@ -262,7 +266,7 @@ export function RecordingDetailModal({
             with flex-1, because height:100% doesn't resolve against a parent
             whose own height comes from flex layout rather than an explicit
             value — which silently let the transcript grow past the modal. */}
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
+        <div className="flex h-[60vh] min-h-80 flex-col p-4">
           <TranscriptPanel
             recording={recording}
             currentTime={currentTime}
@@ -279,8 +283,9 @@ export function RecordingDetailModal({
             onRemoveTabLines={removeTabLines}
           />
         </div>
+        </div>
 
-        <div className="flex items-center justify-between gap-2 border-t border-zinc-200 p-4 dark:border-zinc-800">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-zinc-200 p-4 dark:border-zinc-800">
           <button
             onClick={handleExport}
             disabled={busy}
