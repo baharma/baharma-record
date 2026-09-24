@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { TranscriberStatus } from "@/hooks/useTranscriber";
 import { readLocalStorage, writeLocalStorage } from "@/lib/localStorage";
 import { TranscriptSourceBadge } from "./TranscriptSourceBadge";
@@ -39,6 +39,10 @@ interface Props {
   hasPreviousTranscript: boolean;
   onUndoTranscript: () => void;
   onRemoveTabLines: () => void;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 const MODEL_STORAGE_KEY = "baharma-record:whisper-model";
@@ -174,11 +178,69 @@ export function TranscriptPanel({
     return idx;
   }, [segments, currentTime, isFreeform]);
 
+  // Transcript search. Matches are numbered globally across segments in
+  // reading order so Enter / Shift+Enter can step through them all.
+  const [query, setQuery] = useState("");
+  const [matchCursor, setMatchCursor] = useState(0);
+  const currentMatchRef = useRef<HTMLElement | null>(null);
+  const trimmedQuery = query.trim();
+
+  const search = useMemo(() => {
+    if (!trimmedQuery || !segments) return { offsets: [] as number[], total: 0 };
+    const pattern = new RegExp(escapeRegExp(trimmedQuery), "gi");
+    const offsets: number[] = [];
+    let total = 0;
+    for (const segment of segments) {
+      offsets.push(total);
+      total += segment.text.match(pattern)?.length ?? 0;
+    }
+    return { offsets, total };
+  }, [segments, trimmedQuery]);
+
+  const currentMatch = search.total > 0 ? matchCursor % search.total : 0;
+
+  function stepMatch(delta: number) {
+    if (search.total === 0) return;
+    setMatchCursor((currentMatch + delta + search.total) % search.total);
+  }
+
+  function highlight(text: string, firstMatchIndex: number): ReactNode {
+    if (!trimmedQuery) return text;
+    const parts = text.split(new RegExp(`(${escapeRegExp(trimmedQuery)})`, "gi"));
+    let matchIndex = firstMatchIndex;
+    return parts.map((part, i) => {
+      if (i % 2 === 0) return <Fragment key={i}>{part}</Fragment>;
+      const isCurrent = matchIndex === currentMatch;
+      const node = (
+        <mark
+          key={i}
+          ref={isCurrent ? currentMatchRef : undefined}
+          className={
+            isCurrent
+              ? "rounded-sm bg-orange-400 px-0.5 text-black"
+              : "rounded-sm bg-yellow-200 px-0.5 text-black"
+          }
+        >
+          {part}
+        </mark>
+      );
+      matchIndex++;
+      return node;
+    });
+  }
+
   useEffect(() => {
+    if (trimmedQuery) return;
     if (activeIndex >= 0) {
       activeRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
-  }, [activeIndex]);
+  }, [activeIndex, trimmedQuery]);
+
+  useEffect(() => {
+    if (search.total > 0) {
+      currentMatchRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [currentMatch, search.total, trimmedQuery]);
 
   function startEditing() {
     if (segments && segments.length > 0) {
@@ -302,11 +364,61 @@ export function TranscriptPanel({
       {/* min-h-0 is load-bearing: a flex item defaults to min-height:auto, so
           without it this grows to fit the transcript instead of scrolling —
           shoving the action buttons below the bottom of the modal. */}
+      {hasSegments && (
+        <div className="mb-2 flex shrink-0 items-center gap-2">
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setMatchCursor(0);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                stepMatch(event.shiftKey ? -1 : 1);
+              } else if (event.key === "Escape" && query) {
+                event.stopPropagation();
+                setQuery("");
+              }
+            }}
+            placeholder="Search transcript…"
+            aria-label="Search transcript"
+            className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+          />
+          {trimmedQuery && (
+            <>
+              <span className="shrink-0 text-xs tabular-nums text-zinc-500">
+                {search.total > 0 ? `${currentMatch + 1} / ${search.total}` : "No matches"}
+              </span>
+              <button
+                onClick={() => stepMatch(-1)}
+                disabled={search.total === 0}
+                aria-label="Previous match"
+                className="rounded-md border border-zinc-300 px-2 py-1 text-sm disabled:opacity-40 dark:border-zinc-700"
+              >
+                ↑
+              </button>
+              <button
+                onClick={() => stepMatch(1)}
+                disabled={search.total === 0}
+                aria-label="Next match"
+                className="rounded-md border border-zinc-300 px-2 py-1 text-sm disabled:opacity-40 dark:border-zinc-700"
+              >
+                ↓
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {!hasSegments ? (
           <p className="text-sm italic text-zinc-400">No transcript text yet.</p>
         ) : isFreeform ? (
-          <p className="whitespace-pre-wrap text-sm leading-relaxed">{segments![0].text}</p>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed">
+            {highlight(segments![0].text, 0)}
+          </p>
         ) : (
           <div className="space-y-1">
             {segments!.map((segment, i) => (
@@ -324,7 +436,7 @@ export function TranscriptPanel({
                   {formatDuration(segment.time)}
                 </span>
                 {isMixed && <TranscriptSourceBadge source={segment.source} />}
-                {segment.text}
+                {highlight(segment.text, search.offsets[i] ?? 0)}
               </button>
             ))}
           </div>

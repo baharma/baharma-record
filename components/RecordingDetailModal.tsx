@@ -7,6 +7,7 @@ import { formatDateTime, formatDuration, sanitizeFileName } from "@/lib/mediaFor
 import type { TranscribeEngineRequest } from "@/lib/transcription/cloudProviders";
 import type { ModelFileProgress, TranscribeProgress } from "@/lib/transcription/types";
 import { sourceTypeLabel, type RecordingEntry, type TranscriptSegment } from "@/lib/types";
+import { FullscreenTranscript } from "./FullscreenTranscript";
 import { TranscriptPanel } from "./TranscriptPanel";
 
 interface Props {
@@ -42,6 +43,11 @@ export function RecordingDetailModal({
   const setMediaRef = (el: HTMLMediaElement | null) => {
     mediaRef.current = el;
   };
+  // Fullscreen goes on a wrapper around the video, not the <video> itself, so
+  // the transcript can sit beside it (native video fullscreen hides everything
+  // else). The native fullscreen button is disabled in favour of our own.
+  const playerRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [editingLabel, setEditingLabel] = useState(false);
@@ -69,6 +75,17 @@ export function RecordingDetailModal({
     setAudioUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [recording.audioBlob]);
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === playerRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void playerRef.current?.requestFullscreen().catch(() => {});
+  }
 
   function handleSeek(time: number) {
     if (mediaRef.current) {
@@ -244,13 +261,40 @@ export function RecordingDetailModal({
         <div className="border-b border-zinc-200 p-4 dark:border-zinc-800">
           {audioUrl &&
             (hasVideo ? (
-              <video
-                ref={setMediaRef}
-                src={audioUrl}
-                controls
-                className="max-h-[40vh] w-full rounded-md bg-black"
-                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-              />
+              <div
+                ref={playerRef}
+                className={`relative ${isFullscreen ? "flex h-screen w-screen bg-black" : ""}`}
+              >
+                <video
+                  ref={setMediaRef}
+                  src={audioUrl}
+                  controls
+                  controlsList="nofullscreen"
+                  className={
+                    isFullscreen
+                      ? "h-full min-w-0 flex-1 bg-black object-contain"
+                      : "max-h-[40vh] w-full rounded-md bg-black"
+                  }
+                  onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                />
+                {isFullscreen ? (
+                  <FullscreenTranscript
+                    segments={recording.transcriptSegments}
+                    freeform={recording.transcriptEditedManually}
+                    showSource={recording.sourceType === "mixed"}
+                    currentTime={currentTime}
+                    onSeek={handleSeek}
+                    onExit={toggleFullscreen}
+                  />
+                ) : (
+                  <button
+                    onClick={toggleFullscreen}
+                    className="absolute right-2 top-2 rounded-md bg-black/60 px-2 py-1 text-xs text-white hover:bg-black/80"
+                  >
+                    Fullscreen + transcript
+                  </button>
+                )}
+              </div>
             ) : (
               <audio
                 ref={setMediaRef}
