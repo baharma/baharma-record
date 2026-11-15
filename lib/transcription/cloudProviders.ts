@@ -85,6 +85,21 @@ export const cloudApiKeyStorageKey = (provider: CloudProviderId) =>
   `baharma-record:cloud-api-key:${provider}`;
 export const cloudModelStorageKey = (provider: CloudProviderId) =>
   `baharma-record:cloud-model:${provider}`;
+// Summary & Translation (lib/aiText.ts) ride the same provider + API key +
+// base URL as cloud batch transcription — one account, one key, two model
+// ids — so only the *text* (LLM) model gets its own per-provider storage key
+// here, separate from the speech model above.
+export const cloudLlmModelStorageKey = (provider: CloudProviderId) =>
+  `baharma-record:cloud-llm-model:${provider}`;
+export const DEFAULT_LLM_MODELS: Record<CloudProviderId, string> = {
+  openai: "gpt-4o-mini",
+  groq: "llama-3.3-70b-versatile",
+  // Hugging Face doesn't support these features at all (see aiText.ts) — the
+  // empty string only serves as the SettingsModal placeholder.
+  huggingface: "",
+  "9router": "gpt-4o-mini",
+  custom: "gpt-4o-mini",
+};
 // 9Router's gateway origin gets its own override key (CLOUD_BASE_URL_STORAGE_KEY
 // belongs to the "custom" provider) — a 9Router instance may run on another
 // port or a remote host, and that choice shouldn't clobber a separately

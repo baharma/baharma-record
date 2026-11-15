@@ -20,6 +20,32 @@ export interface TranscriptSegment {
   source?: TranscriptSource;
 }
 
+/**
+ * An LLM-translated copy of transcriptSegments (see lib/aiText.ts), kept
+ * alongside — never instead of — the original so the user can switch views.
+ * Segment times mirror the original's one-for-one, so click-to-seek keeps
+ * working in the translated view. Cleared whenever transcriptSegments is
+ * replaced (re-transcribe, manual edit, remove tab lines, undo): a
+ * translation aligned to a stale transcript would be silently wrong.
+ */
+export interface TranscriptTranslation {
+  /** Target language code (lib/speechLanguage.ts), e.g. "en". */
+  language: string;
+  segments: TranscriptSegment[];
+  createdAt: number;
+}
+
+/**
+ * An LLM-generated summary of the transcript (see lib/aiText.ts) — plain
+ * text, written in `language`. Cleared alongside TranscriptTranslation
+ * whenever the transcript it was derived from is replaced.
+ */
+export interface TranscriptSummary {
+  language: string;
+  text: string;
+  createdAt: number;
+}
+
 export interface RecordingEntry {
   id: string;
   label: string;
@@ -45,6 +71,13 @@ export interface RecordingEntry {
    */
   secondaryAudioBlob: Blob | null;
   secondaryAudioMimeType: string | null;
+  /**
+   * Optional LLM translation of transcriptSegments — see TranscriptTranslation.
+   * Older records predate this field and read as undefined at runtime.
+   */
+  translation?: TranscriptTranslation;
+  /** Optional LLM summary of transcriptSegments — see TranscriptSummary. */
+  summary?: TranscriptSummary;
 }
 
 /** A live recording that hasn't been saved to the library yet. */

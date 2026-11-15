@@ -6,6 +6,14 @@ import { useRecordingsStore } from "@/hooks/useRecordingsStore";
 import { useToasts } from "@/hooks/useToasts";
 import { useTranscriber } from "@/hooks/useTranscriber";
 import { downloadBlob, exportRecordingsToZip, importZipFile } from "@/lib/exportImport";
+import {
+  isLlmReady,
+  readLlmConfig,
+  speechLanguageName,
+  summarizeTranscript,
+  translateTranscriptSegments,
+} from "@/lib/aiText";
+import { formatRecordingTranscript } from "@/lib/transcriptFormat";
 import { cloudProvider, type TranscribeEngineRequest } from "@/lib/transcription/cloudProviders";
 import { transcribeWithCloudProvider } from "@/lib/transcription/cloudTranscribe";
 import type { PendingSession, RecordingEntry, TranscriptSegment } from "@/lib/types";
@@ -30,6 +38,12 @@ export default function AppClient() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [transcribingId, setTranscribingId] = useState<string | null>(null);
+  // Summary & Translation jobs (lib/aiText.ts) — one at a time app-wide, like
+  // transcription. `id` is recorded so the panel can label its own buttons.
+  const [aiTextJob, setAiTextJob] = useState<{
+    id: string;
+    kind: "translate" | "summarize";
+  } | null>(null);
 
   const handleSessionsCreated = useCallback((sessions: PendingSession[]) => {
     setActiveSessions((prev) => [...prev, ...sessions]);
@@ -99,6 +113,71 @@ export default function AppClient() {
     [store],
   );
 
+  const handleTranslate = useCallback(
+    async (recording: RecordingEntry, language: string) => {
+      const segments = recording.transcriptSegments;
+      if (!segments || segments.length === 0 || aiTextJob) return;
+      const config = readLlmConfig();
+      if (!isLlmReady(config)) {
+        push(
+          "error",
+          "Summary & Translation need a provider with an API key — set one in Settings → " +
+            "Cloud Batch Transcription (Hugging Face isn't supported for these).",
+        );
+        return;
+      }
+      setAiTextJob({ id: recording.id, kind: "translate" });
+      try {
+        const translated = await translateTranscriptSegments(
+          config,
+          segments,
+          speechLanguageName(language),
+        );
+        await store.updateRecording(recording.id, {
+          translation: { language, segments: translated, createdAt: Date.now() },
+        });
+        push("success", `Translated "${recording.label}" to ${speechLanguageName(language)}.`);
+      } catch (error) {
+        push("error", error instanceof Error ? error.message : "Translation failed.");
+      } finally {
+        setAiTextJob(null);
+      }
+    },
+    [aiTextJob, store, push],
+  );
+
+  const handleSummarize = useCallback(
+    async (recording: RecordingEntry, language: string) => {
+      if (aiTextJob) return;
+      // Same formatter as Copy Transcript — timestamp/source prefixes give
+      // the model ordering and speaker context for free.
+      const transcriptText = formatRecordingTranscript(recording);
+      if (!transcriptText) return;
+      const config = readLlmConfig();
+      if (!isLlmReady(config)) {
+        push(
+          "error",
+          "Summary & Translation need a provider with an API key — set one in Settings → " +
+            "Cloud Batch Transcription (Hugging Face isn't supported for these).",
+        );
+        return;
+      }
+      setAiTextJob({ id: recording.id, kind: "summarize" });
+      try {
+        const text = await summarizeTranscript(config, transcriptText, speechLanguageName(language));
+        await store.updateRecording(recording.id, {
+          summary: { language, text, createdAt: Date.now() },
+        });
+        push("success", `Summarized "${recording.label}" in ${speechLanguageName(language)}.`);
+      } catch (error) {
+        push("error", error instanceof Error ? error.message : "Summarization failed.");
+      } finally {
+        setAiTextJob(null);
+      }
+    },
+    [aiTextJob, store, push],
+  );
+
   const handleAutoTranscribe = useCallback(
     async (recording: RecordingEntry, language: string, request: TranscribeEngineRequest) => {
       if (transcribingId) return;
@@ -133,6 +212,11 @@ export default function AppClient() {
         await store.updateRecording(recording.id, {
           transcriptSegments: finalSegments.length > 0 ? finalSegments : null,
           transcriptEditedManually: false,
+          // The transcript these were derived from is being replaced — a
+          // translation aligned to the old segments, or a summary of them,
+          // would be silently stale (see TranscriptTranslation in types.ts).
+          translation: undefined,
+          summary: undefined,
         });
 
         const lastSegmentTime = newSegments.length
@@ -286,6 +370,9 @@ export default function AppClient() {
           onUpdate={handleUpdate}
           onError={(message) => push("error", message)}
           onAutoTranscribe={handleAutoTranscribe}
+          onTranslate={handleTranslate}
+          onSummarize={handleSummarize}
+          aiTextJob={aiTextJob}
           isTranscribing={transcribingId === selected.id}
           transcriberBusyElsewhere={transcribingId !== null && transcribingId !== selected.id}
           transcriberStatus={transcriber.status}

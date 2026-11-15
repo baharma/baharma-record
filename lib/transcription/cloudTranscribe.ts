@@ -22,7 +22,8 @@ interface CloudTranscriptionResponse {
   text?: string;
 }
 
-async function readErrorDetail(response: Response): Promise<string> {
+/** Shared with lib/aiText.ts's chat/completions error path. */
+export async function readErrorDetail(response: Response): Promise<string> {
   try {
     const body = await response.json();
     const message =

@@ -17,6 +17,9 @@ interface Props {
   onUpdate: (id: string, patch: Partial<RecordingEntry>) => Promise<void>;
   onError: (message: string) => void;
   onAutoTranscribe: (recording: RecordingEntry, language: string, request: TranscribeEngineRequest) => void;
+  onTranslate: (recording: RecordingEntry, language: string) => void;
+  onSummarize: (recording: RecordingEntry, language: string) => void;
+  aiTextJob: { id: string; kind: "translate" | "summarize" } | null;
   isTranscribing: boolean;
   transcriberBusyElsewhere: boolean;
   transcriberStatus: TranscriberStatus;
@@ -31,6 +34,9 @@ export function RecordingDetailModal({
   onUpdate,
   onError,
   onAutoTranscribe,
+  onTranslate,
+  onSummarize,
+  aiTextJob,
   isTranscribing,
   transcriberBusyElsewhere,
   transcriberStatus,
@@ -125,6 +131,11 @@ export function RecordingDetailModal({
       await onUpdate(recording.id, {
         transcriptSegments: segments.length > 0 ? segments : null,
         transcriptEditedManually: true,
+        // The transcript these were derived from is gone — drop the stale
+        // translation/summary rather than showing text that no longer
+        // corresponds to anything (same rule in AppClient's auto-transcribe).
+        translation: undefined,
+        summary: undefined,
       });
     } catch (error) {
       onError(error instanceof Error ? error.message : "Failed to save transcript.");
@@ -145,6 +156,8 @@ export function RecordingDetailModal({
       await onUpdate(recording.id, {
         transcriptSegments: remaining.length > 0 ? remaining : null,
         transcriptEditedManually: false,
+        translation: undefined,
+        summary: undefined,
       });
     } catch (error) {
       onError(error instanceof Error ? error.message : "Failed to remove the tab lines.");
@@ -157,6 +170,8 @@ export function RecordingDetailModal({
       await onUpdate(recording.id, {
         transcriptSegments: previousTranscript.segments,
         transcriptEditedManually: previousTranscript.editedManually,
+        translation: undefined,
+        summary: undefined,
       });
       setPreviousTranscript(null);
     } catch (error) {
@@ -317,6 +332,9 @@ export function RecordingDetailModal({
             onSeek={handleSeek}
             onSaveTranscript={saveTranscript}
             onAutoTranscribe={handleAutoTranscribeClick}
+            onTranslate={(language) => onTranslate(recording, language)}
+            onSummarize={(language) => onSummarize(recording, language)}
+            aiTextJob={aiTextJob}
             isTranscribing={isTranscribing}
             transcriberBusyElsewhere={transcriberBusyElsewhere}
             transcriberStatus={transcriberStatus}

@@ -7,6 +7,7 @@ import { TranscriptSourceBadge } from "./TranscriptSourceBadge";
 import { formatDuration } from "@/lib/mediaFormat";
 import { defaultSpeechLanguageCode, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
 import { formatRecordingTranscript } from "@/lib/transcriptFormat";
+import { isLlmReady, llmSupported, readLlmConfig, speechLanguageName } from "@/lib/aiText";
 import {
   CLOUD_BASE_URL_STORAGE_KEY,
   CLOUD_PROVIDER_STORAGE_KEY,
@@ -35,6 +36,9 @@ interface Props {
   onSeek: (time: number) => void;
   onSaveTranscript: (segments: TranscriptSegment[]) => Promise<void> | void;
   onAutoTranscribe: (language: string, request: TranscribeEngineRequest) => void;
+  onTranslate: (language: string) => void;
+  onSummarize: (language: string) => void;
+  aiTextJob: { id: string; kind: "translate" | "summarize" } | null;
   isTranscribing: boolean;
   transcriberBusyElsewhere: boolean;
   transcriberStatus: TranscriberStatus;
@@ -51,6 +55,7 @@ function escapeRegExp(value: string): string {
 
 const MODEL_STORAGE_KEY = "baharma-record:whisper-model";
 const ENGINE_STORAGE_KEY = "baharma-record:transcribe-engine";
+const AI_LANGUAGE_STORAGE_KEY = "baharma-record:ai-target-language";
 
 function progressLabel(
   status: TranscriberStatus,
@@ -85,6 +90,9 @@ export function TranscriptPanel({
   onSeek,
   onSaveTranscript,
   onAutoTranscribe,
+  onTranslate,
+  onSummarize,
+  aiTextJob,
   isTranscribing,
   transcriberBusyElsewhere,
   transcriberStatus,
@@ -147,6 +155,25 @@ export function TranscriptPanel({
     setCloudModel(savedModel && savedModel.length > 0 ? savedModel : cloudProvider(cloudProviderId).defaultModel);
   }
 
+  // Summary & Translation (lib/aiText.ts): the target language — what to
+  // translate INTO and to write the summary in — remembered across runs, and
+  // which version of the transcript is displayed.
+  const [aiLanguage, setAiLanguage] = useState(
+    () => readLocalStorage(AI_LANGUAGE_STORAGE_KEY) ?? defaultSpeechLanguageCode(),
+  );
+  const [aiView, setAiView] = useState<"original" | "translation">("original");
+
+  // Switch to the translated view the moment a new translation lands — it's
+  // the thing the user just asked for. Manually switching back to Original
+  // sticks until another translation arrives (render-time adjustment, same
+  // pattern as the provider switch above).
+  const translatedAt = recording.translation?.createdAt ?? null;
+  const [viewedTranslationAt, setViewedTranslationAt] = useState(translatedAt);
+  if (translatedAt !== viewedTranslationAt) {
+    setViewedTranslationAt(translatedAt);
+    setAiView(translatedAt !== null ? "translation" : "original");
+  }
+
   const cloudReady =
     engine !== "cloud" ||
     (effectiveCloudApiKey(cloudProviderId, apiKey).trim().length > 0 &&
@@ -156,7 +183,26 @@ export function TranscriptPanel({
   const [copied, setCopied] = useState(false);
   const activeRef = useRef<HTMLButtonElement | null>(null);
 
+  // Which version the list/search/highlight operate on. The translation
+  // mirrors the original's times and source tags one-for-one, so seeking and
+  // the MIC/TAB badges keep working in the translated view. Search and
+  // editing always run against the displayed version / the original
+  // respectively.
   const segments = recording.transcriptSegments;
+  const translation = recording.translation;
+  const showingTranslation = aiView === "translation" && Boolean(translation);
+  const displaySegments = showingTranslation && translation ? translation.segments : segments;
+
+  const llmConfig = readLlmConfig();
+  const aiReady = isLlmReady(llmConfig);
+  const aiBusyAnywhere = aiTextJob !== null;
+  const aiButtonTitle = !aiReady
+    ? llmSupported(llmConfig.provider)
+      ? "Set a provider with an API key in Settings → Cloud Batch Transcription to use translation and summary"
+      : "Hugging Face doesn't support translation/summary — pick another provider in Settings"
+    : aiBusyAnywhere
+      ? "A translation/summary job is already running"
+      : "Runs on the provider configured in Settings → Cloud Batch Transcription, via its chat endpoint";
   const hasSegments = Boolean(segments && segments.length > 0);
   const isFreeform = recording.transcriptEditedManually;
   const isMixed = recording.sourceType === "mixed";
@@ -180,14 +226,14 @@ export function TranscriptPanel({
         : "Transcribe Audio";
 
   const activeIndex = useMemo(() => {
-    if (isFreeform || !segments || segments.length === 0) return -1;
+    if (isFreeform || !displaySegments || displaySegments.length === 0) return -1;
     let idx = -1;
-    for (let i = 0; i < segments.length; i++) {
-      if (segments[i].time <= currentTime) idx = i;
+    for (let i = 0; i < displaySegments.length; i++) {
+      if (displaySegments[i].time <= currentTime) idx = i;
       else break;
     }
     return idx;
-  }, [segments, currentTime, isFreeform]);
+  }, [displaySegments, currentTime, isFreeform]);
 
   // Transcript search. Matches are numbered globally across segments in
   // reading order so Enter / Shift+Enter can step through them all.
@@ -197,16 +243,16 @@ export function TranscriptPanel({
   const trimmedQuery = query.trim();
 
   const search = useMemo(() => {
-    if (!trimmedQuery || !segments) return { offsets: [] as number[], total: 0 };
+    if (!trimmedQuery || !displaySegments) return { offsets: [] as number[], total: 0 };
     const pattern = new RegExp(escapeRegExp(trimmedQuery), "gi");
     const offsets: number[] = [];
     let total = 0;
-    for (const segment of segments) {
+    for (const segment of displaySegments) {
       offsets.push(total);
       total += segment.text.match(pattern)?.length ?? 0;
     }
     return { offsets, total };
-  }, [segments, trimmedQuery]);
+  }, [displaySegments, trimmedQuery]);
 
   const currentMatch = search.total > 0 ? matchCursor % search.total : 0;
 
@@ -372,6 +418,70 @@ export function TranscriptPanel({
         </div>
       )}
 
+      {recording.summary && (
+        <div className="mb-3 shrink-0 rounded-md border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Summary ({speechLanguageName(recording.summary.language)})
+          </div>
+          <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
+            {recording.summary.text}
+          </p>
+        </div>
+      )}
+
+      {hasSegments && (
+        <div className="mb-2 flex shrink-0 flex-wrap items-center gap-2">
+          {translation && (
+            <select
+              value={aiView}
+              onChange={(event) => setAiView(event.target.value as "original" | "translation")}
+              className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+              title="Switch the transcript list between the original and the translated version"
+            >
+              <option value="original">Original</option>
+              <option value="translation">
+                Translation ({speechLanguageName(translation.language)})
+              </option>
+            </select>
+          )}
+          <select
+            value={aiLanguage}
+            onChange={(event) => {
+              setAiLanguage(event.target.value);
+              writeLocalStorage(AI_LANGUAGE_STORAGE_KEY, event.target.value);
+            }}
+            className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+            title="Language to translate the transcript into, and to write the summary in"
+          >
+            {SPEECH_LANGUAGES.map((lang) => (
+              <option key={lang.code} value={lang.code}>
+                {lang.name}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => onTranslate(aiLanguage)}
+            disabled={aiBusyAnywhere || !aiReady}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            title={aiButtonTitle}
+          >
+            {aiTextJob?.id === recording.id && aiTextJob.kind === "translate"
+              ? "Translating…"
+              : "Translate"}
+          </button>
+          <button
+            onClick={() => onSummarize(aiLanguage)}
+            disabled={aiBusyAnywhere || !aiReady}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            title={aiButtonTitle}
+          >
+            {aiTextJob?.id === recording.id && aiTextJob.kind === "summarize"
+              ? "Summarizing…"
+              : "Summarize"}
+          </button>
+        </div>
+      )}
+
       {/* min-h-0 is load-bearing: a flex item defaults to min-height:auto, so
           without it this grows to fit the transcript instead of scrolling —
           shoving the action buttons below the bottom of the modal. */}
@@ -428,11 +538,11 @@ export function TranscriptPanel({
           <p className="text-sm italic text-zinc-400">No transcript text yet.</p>
         ) : isFreeform ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed">
-            {highlight(segments![0].text, 0)}
+            {highlight(displaySegments![0].text, 0)}
           </p>
         ) : (
           <div className="space-y-1">
-            {segments!.map((segment, i) => (
+            {displaySegments!.map((segment, i) => (
               <button
                 key={i}
                 ref={i === activeIndex ? activeRef : undefined}

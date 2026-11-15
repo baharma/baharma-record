@@ -6,7 +6,13 @@ import {
   sanitizeFileName,
 } from "./mediaFormat";
 import { formatTranscriptText } from "./transcriptFormat";
-import type { RecordingEntry, SourceType, TranscriptSegment } from "./types";
+import type {
+  RecordingEntry,
+  SourceType,
+  TranscriptSegment,
+  TranscriptSummary,
+  TranscriptTranslation,
+} from "./types";
 
 interface RecordingMetaJson {
   id: string;
@@ -20,6 +26,9 @@ interface RecordingMetaJson {
   has_transcript: boolean;
   transcript_segments: TranscriptSegment[] | null;
   transcript_edited_manually: boolean;
+  /** Optional: LLM translation/summary (see lib/aiText.ts) — absent on zips written before they existed. */
+  transcript_translation?: TranscriptTranslation | null;
+  transcript_summary?: TranscriptSummary | null;
 }
 
 function metaFromEntry(entry: RecordingEntry, mediaFile: string): RecordingMetaJson {
@@ -34,6 +43,8 @@ function metaFromEntry(entry: RecordingEntry, mediaFile: string): RecordingMetaJ
     has_transcript: Boolean(entry.transcriptSegments && entry.transcriptSegments.length > 0),
     transcript_segments: entry.transcriptSegments,
     transcript_edited_manually: entry.transcriptEditedManually,
+    transcript_translation: entry.translation ?? null,
+    transcript_summary: entry.summary ?? null,
   };
 }
 
@@ -146,6 +157,10 @@ async function parseRecordingFolder(
     hasVideo,
     transcriptSegments: meta.transcript_segments ?? null,
     transcriptEditedManually: Boolean(meta.transcript_edited_manually),
+    // Optional on older zips — undefined there, same as records that predate
+    // the fields (see TranscriptTranslation in types.ts).
+    translation: meta.transcript_translation ?? undefined,
+    summary: meta.transcript_summary ?? undefined,
     // The secondary (isolated tab-only) audio used to fill in a "mixed"
     // recording's tab-side transcript is a working artifact, not exported —
     // by the time a recording is exported, that transcription pass has

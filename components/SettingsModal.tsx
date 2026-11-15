@@ -6,8 +6,10 @@ import {
   CLOUD_BASE_URL_STORAGE_KEY,
   CLOUD_PROVIDER_STORAGE_KEY,
   CLOUD_PROVIDERS,
+  DEFAULT_LLM_MODELS,
   NINE_ROUTER_BASE_URL_STORAGE_KEY,
   cloudApiKeyStorageKey,
+  cloudLlmModelStorageKey,
   cloudModelStorageKey,
   cloudProvider,
   nineRouterEnvApiKey,
@@ -56,6 +58,11 @@ export function SettingsModal({ onClose }: Props) {
   const [nineRouterOrigin, setNineRouterOrigin] = useState(
     () => readLocalStorage(NINE_ROUTER_BASE_URL_STORAGE_KEY) ?? "",
   );
+  // Summary & Translation's text (LLM) model — empty means "use the
+  // provider's default" (shown as the placeholder).
+  const [llmModel, setLlmModel] = useState(
+    () => readLocalStorage(cloudLlmModelStorageKey(cloudProviderId)) ?? "",
+  );
 
   // Each provider remembers its own key/model — same render-time-adjustment
   // pattern as TranscriptPanel's identical picker (see the comment there for
@@ -66,6 +73,8 @@ export function SettingsModal({ onClose }: Props) {
     setCloudApiKey(readLocalStorage(cloudApiKeyStorageKey(cloudProviderId)) ?? "");
     const savedModel = readLocalStorage(cloudModelStorageKey(cloudProviderId));
     setCloudModel(savedModel && savedModel.length > 0 ? savedModel : cloudProvider(cloudProviderId).defaultModel);
+    // Same per-provider memory for the Summary & Translation text model.
+    setLlmModel(readLocalStorage(cloudLlmModelStorageKey(cloudProviderId)) ?? "");
   }
 
   return (
@@ -184,6 +193,28 @@ export function SettingsModal({ onClose }: Props) {
             placeholder="model id"
             className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
             title="The model id this provider expects, e.g. whisper-1 or whisper-large-v3-turbo"
+          />
+        </section>
+
+        <section className="mt-4">
+          <h3 className="text-sm font-semibold">Summary &amp; Translation</h3>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            Used by the &quot;Translate&quot; and &quot;Summarize&quot; buttons in a recording&apos;s
+            transcript view. Runs on the same provider and API key as Cloud Batch Transcription
+            above, through its chat endpoint — only the text model differs. Hugging Face doesn&apos;t
+            support these two features.
+          </p>
+          <input
+            type="text"
+            value={llmModel}
+            onChange={(event) => {
+              setLlmModel(event.target.value);
+              writeLocalStorage(cloudLlmModelStorageKey(cloudProviderId), event.target.value);
+            }}
+            disabled={cloudProviderId === "huggingface"}
+            placeholder={DEFAULT_LLM_MODELS[cloudProviderId] || "not available for this provider"}
+            className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
+            title="The text (LLM) model id this provider expects, e.g. gpt-4o-mini — leave empty to use the provider's default shown as the placeholder"
           />
         </section>
 
