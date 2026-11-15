@@ -7,7 +7,13 @@ import { TranscriptSourceBadge } from "./TranscriptSourceBadge";
 import { formatDuration } from "@/lib/mediaFormat";
 import { defaultSpeechLanguageCode, SPEECH_LANGUAGES } from "@/lib/speechLanguage";
 import { formatRecordingTranscript } from "@/lib/transcriptFormat";
-import { isLlmReady, llmSupported, readLlmConfig, speechLanguageName } from "@/lib/aiText";
+import {
+  AI_TARGET_LANGUAGE_STORAGE_KEY,
+  isLlmReady,
+  llmSupported,
+  readLlmConfig,
+  speechLanguageName,
+} from "@/lib/aiText";
 import {
   CLOUD_BASE_URL_STORAGE_KEY,
   CLOUD_PROVIDER_STORAGE_KEY,
@@ -55,7 +61,6 @@ function escapeRegExp(value: string): string {
 
 const MODEL_STORAGE_KEY = "baharma-record:whisper-model";
 const ENGINE_STORAGE_KEY = "baharma-record:transcribe-engine";
-const AI_LANGUAGE_STORAGE_KEY = "baharma-record:ai-target-language";
 
 function progressLabel(
   status: TranscriberStatus,
@@ -159,7 +164,7 @@ export function TranscriptPanel({
   // translate INTO and to write the summary in — remembered across runs, and
   // which version of the transcript is displayed.
   const [aiLanguage, setAiLanguage] = useState(
-    () => readLocalStorage(AI_LANGUAGE_STORAGE_KEY) ?? defaultSpeechLanguageCode(),
+    () => readLocalStorage(AI_TARGET_LANGUAGE_STORAGE_KEY) ?? defaultSpeechLanguageCode(),
   );
   const [aiView, setAiView] = useState<"original" | "translation">("original");
 
@@ -448,7 +453,7 @@ export function TranscriptPanel({
             value={aiLanguage}
             onChange={(event) => {
               setAiLanguage(event.target.value);
-              writeLocalStorage(AI_LANGUAGE_STORAGE_KEY, event.target.value);
+              writeLocalStorage(AI_TARGET_LANGUAGE_STORAGE_KEY, event.target.value);
             }}
             className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
             title="Language to translate the transcript into, and to write the summary in"

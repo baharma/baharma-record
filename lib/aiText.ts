@@ -36,6 +36,14 @@ export function llmSupported(provider: CloudProviderId): boolean {
   return provider !== "huggingface";
 }
 
+// Shared by every "what language should AI text come out in" control — the
+// detail view's Translate/Summarize row and the live card's translation
+// toggle — so they default consistently and changing it in one place carries.
+export const AI_TARGET_LANGUAGE_STORAGE_KEY = "baharma-record:ai-target-language";
+// Whether the live card translates/summarizes while recording. Default on:
+// the control only ever shows when a working provider is configured anyway.
+export const LIVE_AI_ENABLED_STORAGE_KEY = "baharma-record:live-ai-enabled";
+
 export interface LlmConfig {
   provider: CloudProviderId;
   baseUrl: string;
@@ -263,6 +271,36 @@ export async function summarizeTranscript(
       `them into one overall summary in ${languageName}: the main topics, decisions, and ` +
       `action items, without repeating what the parts have in common.\n\n` +
       partials.join("\n\n"),
+  );
+}
+
+/**
+ * Incremental summary for the *live* card (useLiveAiText.ts): instead of
+ * re-summarizing the whole growing transcript every tick, the model updates
+ * the previous summary with only the lines that arrived since — one cheap
+ * request per tick instead of an ever-growing one. A fresh summary (null
+ * previous) summarizes from scratch.
+ */
+export async function updateRunningSummary(
+  config: LlmConfig,
+  previousSummary: string | null,
+  transcriptText: string,
+  languageName: string,
+): Promise<string> {
+  if (!previousSummary) {
+    return chatCompletion(
+      config,
+      SUMMARIZER_SYSTEM,
+      `Summarize the following live transcript so far, in ${languageName}.\n\n${transcriptText}`,
+    );
+  }
+  return chatCompletion(
+    config,
+    SUMMARIZER_SYSTEM,
+    `You maintain a running summary of a live transcript. Update the summary below so it ` +
+      `also covers the new lines — keep what's still relevant, add what's new, drop nothing ` +
+      `important. Reply with the full updated summary only, in ${languageName}.\n\n` +
+      `CURRENT SUMMARY:\n${previousSummary}\n\nNEW TRANSCRIPT LINES:\n${transcriptText}`,
   );
 }
 
