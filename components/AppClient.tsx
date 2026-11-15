@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useLiveTranscriber } from "@/hooks/useLiveTranscriber";
+import type { LiveAiFinalResult } from "@/hooks/useLiveAiText";
 import { useRecordingsStore } from "@/hooks/useRecordingsStore";
 import { useToasts } from "@/hooks/useToasts";
 import { useTranscriber } from "@/hooks/useTranscriber";
@@ -66,6 +67,49 @@ export default function AppClient() {
     [store, push],
   );
 
+  // Called after a live session's recording is already saved: attaches the
+  // translation/summary the card produced, but only when the stored
+  // transcript is still exactly the one the AI text was derived from (a
+  // pagehide snapshot overwrite or an edit would break the per-line pairing).
+  // Best-effort by design — never an error toast.
+  const handleSessionAiResult = useCallback(
+    async (id: string, segmentsAtStop: TranscriptSegment[], ai: LiveAiFinalResult) => {
+      try {
+        const stored = await store.getRecording(id);
+        if (!stored) return;
+        const storedSegments = stored.transcriptSegments;
+        const unchanged =
+          !stored.transcriptEditedManually &&
+          Boolean(storedSegments) &&
+          storedSegments!.length === segmentsAtStop.length &&
+          storedSegments!.every(
+            (segment, i) =>
+              segment.time === segmentsAtStop[i].time && segment.text === segmentsAtStop[i].text,
+          );
+        if (!unchanged) return;
+        const patch: Partial<RecordingEntry> = {};
+        if (ai.translation) patch.translation = ai.translation;
+        if (ai.summary) patch.summary = ai.summary;
+        if (Object.keys(patch).length === 0) return;
+        await store.updateRecording(id, patch);
+        const what =
+          ai.translation && ai.summary
+            ? "translation and summary"
+            : ai.translation
+              ? "translation"
+              : "summary";
+        push("info", `Added the live ${what} to "${stored.label}".`);
+      } catch {
+        // The recording is safe; the AI text is an enhancement.
+      }
+    },
+    [store, push],
+  );
+
+  const handleOpenSettings = useCallback(() => {
+    setShowSettingsModal(true);
+  }, []);
+
   // Written on page exit, so no toast and no awaiting — the page is going away.
   const handleSessionSnapshot = useCallback(
     (entry: RecordingEntry) => {
@@ -121,8 +165,8 @@ export default function AppClient() {
       if (!isLlmReady(config)) {
         push(
           "error",
-          "Summary & Translation need a provider with an API key — set one in Settings → " +
-            "Cloud Batch Transcription (Hugging Face isn't supported for these).",
+          "Summary & Translation isn't configured yet — set it up in Settings → " +
+            "Summary & Translation (a 9Router gateway works without an API key).",
         );
         return;
       }
@@ -157,8 +201,8 @@ export default function AppClient() {
       if (!isLlmReady(config)) {
         push(
           "error",
-          "Summary & Translation need a provider with an API key — set one in Settings → " +
-            "Cloud Batch Transcription (Hugging Face isn't supported for these).",
+          "Summary & Translation isn't configured yet — set it up in Settings → " +
+            "Summary & Translation (a 9Router gateway works without an API key).",
         );
         return;
       }
@@ -339,6 +383,8 @@ export default function AppClient() {
                 onSnapshot={handleSessionSnapshot}
                 onRemove={handleSessionRemove}
                 onWarning={(message) => push("info", message)}
+                onAiResult={handleSessionAiResult}
+                onOpenSettings={handleOpenSettings}
               />
             ))}
           </div>

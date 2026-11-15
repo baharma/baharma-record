@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { listLlmModels, readLlmConfig } from "@/lib/aiText";
 import { readLocalStorage, writeLocalStorage } from "@/lib/localStorage";
 import {
   CLOUD_BASE_URL_STORAGE_KEY,
   CLOUD_PROVIDER_STORAGE_KEY,
   CLOUD_PROVIDERS,
   DEFAULT_LLM_MODELS,
+  LLM_PROVIDER_STORAGE_KEY,
   NINE_ROUTER_BASE_URL_STORAGE_KEY,
   cloudApiKeyStorageKey,
   cloudLlmModelStorageKey,
@@ -58,11 +60,28 @@ export function SettingsModal({ onClose }: Props) {
   const [nineRouterOrigin, setNineRouterOrigin] = useState(
     () => readLocalStorage(NINE_ROUTER_BASE_URL_STORAGE_KEY) ?? "",
   );
-  // Summary & Translation's text (LLM) model — empty means "use the
-  // provider's default" (shown as the placeholder).
-  const [llmModel, setLlmModel] = useState(
-    () => readLocalStorage(cloudLlmModelStorageKey(cloudProviderId)) ?? "",
+  // Summary & Translation have their own provider choice (default 9Router),
+  // while key/base-url storage keys are shared with the batch section — when
+  // both sections show the same provider they must show the same values, so
+  // the key field binds to `cloudApiKey` there and only uses its own state
+  // when the two providers differ.
+  const [llmProviderId, setLlmProviderId] = useState<CloudProviderId>(() => {
+    const saved = readLocalStorage(LLM_PROVIDER_STORAGE_KEY);
+    return saved && saved !== "huggingface" && CLOUD_PROVIDERS.some((option) => option.id === saved)
+      ? (saved as CloudProviderId)
+      : "9router";
+  });
+  const [llmApiKey, setLlmApiKey] = useState(
+    () => readLocalStorage(cloudApiKeyStorageKey(llmProviderId)) ?? "",
   );
+  // The text (LLM) model — empty means "use the provider's default" (shown
+  // as the placeholder).
+  const [llmModel, setLlmModel] = useState(
+    () => readLocalStorage(cloudLlmModelStorageKey(llmProviderId)) ?? "",
+  );
+  const [llmModels, setLlmModels] = useState<string[]>([]);
+  const [llmModelsStatus, setLlmModelsStatus] = useState<string | null>(null);
+  const [llmModelsLoading, setLlmModelsLoading] = useState(false);
 
   // Each provider remembers its own key/model — same render-time-adjustment
   // pattern as TranscriptPanel's identical picker (see the comment there for
@@ -73,8 +92,32 @@ export function SettingsModal({ onClose }: Props) {
     setCloudApiKey(readLocalStorage(cloudApiKeyStorageKey(cloudProviderId)) ?? "");
     const savedModel = readLocalStorage(cloudModelStorageKey(cloudProviderId));
     setCloudModel(savedModel && savedModel.length > 0 ? savedModel : cloudProvider(cloudProviderId).defaultModel);
-    // Same per-provider memory for the Summary & Translation text model.
-    setLlmModel(readLocalStorage(cloudLlmModelStorageKey(cloudProviderId)) ?? "");
+  }
+  const [loadedLlmProviderId, setLoadedLlmProviderId] = useState(llmProviderId);
+  if (llmProviderId !== loadedLlmProviderId) {
+    setLoadedLlmProviderId(llmProviderId);
+    setLlmApiKey(readLocalStorage(cloudApiKeyStorageKey(llmProviderId)) ?? "");
+    setLlmModel(readLocalStorage(cloudLlmModelStorageKey(llmProviderId)) ?? "");
+    setLlmModels([]);
+    setLlmModelsStatus(null);
+    setLlmModelsLoading(false);
+  }
+
+  async function loadLlmModels() {
+    setLlmModelsLoading(true);
+    setLlmModelsStatus(null);
+    try {
+      // readLlmConfig resolves from localStorage, which every input here
+      // writes through on change — so it always matches what's on screen.
+      const models = await listLlmModels(readLlmConfig());
+      setLlmModels(models);
+      setLlmModelsStatus(`${models.length} models found`);
+    } catch (error) {
+      setLlmModels([]);
+      setLlmModelsStatus(error instanceof Error ? error.message : "Couldn't load models.");
+    } finally {
+      setLlmModelsLoading(false);
+    }
   }
 
   return (
@@ -199,23 +242,108 @@ export function SettingsModal({ onClose }: Props) {
         <section className="mt-4">
           <h3 className="text-sm font-semibold">Summary &amp; Translation</h3>
           <p className="mt-0.5 text-xs text-zinc-500">
-            Used by the &quot;Translate&quot; and &quot;Summarize&quot; buttons in a recording&apos;s
-            transcript view. Runs on the same provider and API key as Cloud Batch Transcription
-            above, through its chat endpoint — only the text model differs. Hugging Face doesn&apos;t
-            support these two features.
+            Used by the &quot;Translate&quot; / &quot;Summarize&quot; buttons in a recording&apos;s
+            transcript view and by the live card&apos;s translation while recording — through the
+            provider&apos;s chat endpoint. Has its own provider choice below, defaulting to a
+            locally-running 9Router gateway, which may run without an API key. Hugging Face
+            doesn&apos;t expose the chat shape these features need.
           </p>
-          <input
-            type="text"
-            value={llmModel}
-            onChange={(event) => {
-              setLlmModel(event.target.value);
-              writeLocalStorage(cloudLlmModelStorageKey(cloudProviderId), event.target.value);
-            }}
-            disabled={cloudProviderId === "huggingface"}
-            placeholder={DEFAULT_LLM_MODELS[cloudProviderId] || "not available for this provider"}
-            className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
-            title="The text (LLM) model id this provider expects, e.g. gpt-4o-mini — leave empty to use the provider's default shown as the placeholder"
-          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <select
+              value={llmProviderId}
+              onChange={(event) => {
+                const next = event.target.value as CloudProviderId;
+                setLlmProviderId(next);
+                writeLocalStorage(LLM_PROVIDER_STORAGE_KEY, next);
+              }}
+              className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+            >
+              {CLOUD_PROVIDERS.filter((option) => option.id !== "huggingface").map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <input
+              type="password"
+              value={llmProviderId === cloudProviderId ? cloudApiKey : llmApiKey}
+              onChange={(event) => {
+                if (llmProviderId === cloudProviderId) {
+                  setCloudApiKey(event.target.value);
+                } else {
+                  setLlmApiKey(event.target.value);
+                }
+                writeLocalStorage(cloudApiKeyStorageKey(llmProviderId), event.target.value);
+              }}
+              placeholder={
+                llmProviderId === "9router" || llmProviderId === "custom"
+                  ? "API key (optional)"
+                  : "API key"
+              }
+              autoComplete="off"
+              className="min-w-32 flex-1 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+              title={
+                llmProviderId === "9router" || llmProviderId === "custom"
+                  ? "Optional — gateways often run without authentication. Left empty on 9Router, NEXT_PUBLIC_9ROUTER_API_KEY (build-time env) is used if set."
+                  : undefined
+              }
+            />
+          </div>
+          {llmProviderId === "9router" && (
+            <input
+              type="text"
+              value={nineRouterOrigin}
+              onChange={(event) => {
+                setNineRouterOrigin(event.target.value);
+                writeLocalStorage(NINE_ROUTER_BASE_URL_STORAGE_KEY, event.target.value);
+              }}
+              placeholder="http://127.0.0.1:20128"
+              className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+              title="Origin of your 9Router gateway (github.com/decolua/9router) — /v1 is appended automatically if missing. Empty uses NEXT_PUBLIC_9ROUTER_BASE_URL, else the default locally-running gateway at http://127.0.0.1:20128. Shared with the batch section when it uses 9Router too."
+            />
+          )}
+          {llmProviderId === "custom" && (
+            <input
+              type="text"
+              value={customBaseUrl}
+              onChange={(event) => {
+                setCustomBaseUrl(event.target.value);
+                writeLocalStorage(CLOUD_BASE_URL_STORAGE_KEY, event.target.value);
+              }}
+              placeholder="https://.../v1"
+              className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+              title="Base URL of a provider with a /chat/completions endpoint, without that trailing path"
+            />
+          )}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <input
+              type="text"
+              list="llm-model-options"
+              value={llmModel}
+              onChange={(event) => {
+                setLlmModel(event.target.value);
+                writeLocalStorage(cloudLlmModelStorageKey(llmProviderId), event.target.value);
+              }}
+              placeholder={DEFAULT_LLM_MODELS[llmProviderId] || "model id"}
+              autoComplete="off"
+              className="min-w-32 flex-1 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+              title="The text (LLM) model id this provider expects, e.g. gpt-4o-mini — leave empty to use the provider's default shown as the placeholder"
+            />
+            <button
+              onClick={() => void loadLlmModels()}
+              disabled={llmModelsLoading}
+              className="rounded-md border border-zinc-300 px-2.5 py-1.5 text-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              title="Fetch the model ids this provider offers (GET /models) as suggestions"
+            >
+              {llmModelsLoading ? "Loading…" : "Load models"}
+            </button>
+          </div>
+          <datalist id="llm-model-options">
+            {llmModels.map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+          {llmModelsStatus && <p className="mt-1 text-xs text-zinc-500">{llmModelsStatus}</p>}
         </section>
 
         <button

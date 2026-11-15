@@ -85,10 +85,12 @@ export const cloudApiKeyStorageKey = (provider: CloudProviderId) =>
   `baharma-record:cloud-api-key:${provider}`;
 export const cloudModelStorageKey = (provider: CloudProviderId) =>
   `baharma-record:cloud-model:${provider}`;
-// Summary & Translation (lib/aiText.ts) ride the same provider + API key +
-// base URL as cloud batch transcription — one account, one key, two model
-// ids — so only the *text* (LLM) model gets its own per-provider storage key
-// here, separate from the speech model above.
+// Summary & Translation (lib/aiText.ts) pick their own provider (independent
+// of the batch one above — text features default to a self-hosted 9Router
+// gateway, speech features to a hosted vendor), while the per-provider key
+// and model keys are shared with the batch section so the same account only
+// ever gets entered once.
+export const LLM_PROVIDER_STORAGE_KEY = "baharma-record:llm-provider";
 export const cloudLlmModelStorageKey = (provider: CloudProviderId) =>
   `baharma-record:cloud-llm-model:${provider}`;
 export const DEFAULT_LLM_MODELS: Record<CloudProviderId, string> = {

@@ -54,6 +54,10 @@ export function useRecordingsStore() {
     [refresh],
   );
 
+  // One-off reads (the live AI text attach step) that don't need the whole
+  // list refreshed — components never talk to lib/db.ts directly.
+  const getRecording = useCallback(async (id: string) => db.getRecording(id), []);
+
   const deleteRecording = useCallback(
     async (id: string) => {
       await db.deleteRecording(id);
@@ -70,6 +74,7 @@ export function useRecordingsStore() {
     addRecording,
     addRecordings,
     updateRecording,
+    getRecording,
     deleteRecording,
   };
 }

@@ -10,7 +10,7 @@ import { formatRecordingTranscript } from "@/lib/transcriptFormat";
 import {
   AI_TARGET_LANGUAGE_STORAGE_KEY,
   isLlmReady,
-  llmSupported,
+  llmNotReadyReason,
   readLlmConfig,
   speechLanguageName,
 } from "@/lib/aiText";
@@ -202,12 +202,11 @@ export function TranscriptPanel({
   const aiReady = isLlmReady(llmConfig);
   const aiBusyAnywhere = aiTextJob !== null;
   const aiButtonTitle = !aiReady
-    ? llmSupported(llmConfig.provider)
-      ? "Set a provider with an API key in Settings → Cloud Batch Transcription to use translation and summary"
-      : "Hugging Face doesn't support translation/summary — pick another provider in Settings"
+    ? (llmNotReadyReason(llmConfig) ??
+      "Set up a provider in Settings → Summary & Translation to use translation and summary")
     : aiBusyAnywhere
       ? "A translation/summary job is already running"
-      : "Runs on the provider configured in Settings → Cloud Batch Transcription, via its chat endpoint";
+      : "Runs on the provider configured in Settings → Summary & Translation, via its chat endpoint";
   const hasSegments = Boolean(segments && segments.length > 0);
   const isFreeform = recording.transcriptEditedManually;
   const isMixed = recording.sourceType === "mixed";

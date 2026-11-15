@@ -240,6 +240,42 @@ a separate source of truth, and skipping it to configure inline still works.
   possibly hour-long recording just to inspect it first would defeat the point of offloading
   the work.
 
+### Live AI text on the recording card
+
+`hooks/useLiveAiText.ts` runs translation and a running summary *while* a session records,
+displayed in ActiveSessionCard's three panels (transcript | translation | summary). It
+speaks the same `chat/completions` shape as the batch cloud path (lib/aiText.ts), but with
+its **own provider setting** (`LLM_PROVIDER_STORAGE_KEY`, defaulting to 9Router) rather
+than the batch provider — a self-hosted gateway is the natural home for text features and
+may run without an API key, which is why `isLlmReady` treats the key as optional for
+9Router/custom and `chatCompletion` only sends the Authorization header when a key exists.
+
+Three invariants that each fixed a real bug:
+
+- **Per-segment identity, not index.** `useRecordingSession` re-sorts the segment array by
+  time after every insert, and on-device tab lines are stamped with their *capture* time —
+  seconds in the past — so a tab line can land before already-processed mic lines. An
+  index-based "translated prefix" then translated one line twice and skipped another; the
+  hook therefore tracks `Map<TranscriptSegment, string>` / `Set<TranscriptSegment>` keyed
+  on the segment objects themselves (they're created once and preserved into the saved
+  entry). Don't replace them with counts or clone segment objects.
+- **One scheduler, one request slot.** A single ~2 s interval decides between a summary
+  update (when one is "due") and translating up to 20 pending lines; independent timers
+  sharing one slot used to make a busy translation push the summary back a full interval.
+  Failed requests back off 10 s and pause scheduling entirely after 3 consecutive
+  failures (the card offers Retry) so a down provider doesn't produce a request per tick
+  for an hour. Every request captures a generation counter and discards its result when
+  the target language changed mid-request — otherwise an old-language reply lands in the
+  freshly cleared maps.
+- **Save first, attach AI text afterwards.** Stop used to await the AI flush *before*
+  `onFinalized` — but once finalize has fired, `useRecordingSession`'s pagehide snapshot
+  refuses to save, so closing the tab during that network wait lost the recording. Now
+  the card saves immediately, and the finalize catch-up (bounded by a 30 s timeout,
+  aborting the fetches) patches the saved entry via `AppClient.handleSessionAiResult`,
+  which re-verifies the stored transcript still matches the one the AI text was derived
+  from before attaching anything. `finalize` is a stable `useCallback` reading only refs
+  so it can keep running after the card unmounts.
+
 ### Live tab transcription (local, on-device)
 
 The no-API-key alternative to Deepgram for the same job: a live transcript of the isolated tab

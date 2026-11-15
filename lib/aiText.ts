@@ -1,9 +1,7 @@
 /**
  * LLM text features over transcripts — translation and summarization —
- * riding the same cloud provider config as cloud batch transcription (see
- * cloudProviders.ts) but through its OpenAI-style
- * `POST {baseUrl}/chat/completions` endpoint with a *text* model instead of
- * the speech one. 9Router exposes that same shape for summaries and
+ * speaking the OpenAI-style `POST {baseUrl}/chat/completions` shape with a
+ * *text* model. 9Router exposes that same shape for summaries and
  * translations per its integration contract, so one code path covers OpenAI,
  * Groq, 9Router, and custom endpoints. Hugging Face is the one exclusion:
  * its preset baseUrl points at the STT-shaped models route (not
@@ -12,13 +10,17 @@
  *
  * Unlike the STT path there's no "local offline" alternative here — the
  * local Whisper worker only does speech-to-text, so these features always
- * need a cloud provider configured.
+ * need a provider configured. The provider choice is their own
+ * (LLM_PROVIDER_STORAGE_KEY, defaulting to 9Router) rather than the batch
+ * transcription one: a user can transcribe with Groq's free whisper tier
+ * while summarizing through their own gateway, and a 9Router gateway may run
+ * without an API key at all, which the hosted vendors can't.
  */
 import {
   CLOUD_BASE_URL_STORAGE_KEY,
-  CLOUD_PROVIDER_STORAGE_KEY,
   CLOUD_PROVIDERS,
   DEFAULT_LLM_MODELS,
+  LLM_PROVIDER_STORAGE_KEY,
   NINE_ROUTER_BASE_URL_STORAGE_KEY,
   cloudApiKeyStorageKey,
   cloudLlmModelStorageKey,
@@ -58,16 +60,18 @@ export function speechLanguageName(code: string): string {
 
 /**
  * Reads the effective LLM config out of localStorage in one place so every
- * consumer (TranscriptPanel's readiness gating, AppClient's requests,
- * SettingsModal's placeholder) resolves it identically — provider, key, and
- * base URL are shared with cloud batch transcription; the model is the LLM
- * one, falling back to the provider default when the user hasn't set it.
+ * consumer (TranscriptPanel's readiness gating, the live card's, the actual
+ * requests, SettingsModal's "Load models") resolves it identically. The
+ * provider is the text features' own choice, falling back to 9Router when
+ * nothing valid is saved — Hugging Face included, since its preset baseUrl
+ * is the STT-shaped models route, not /v1/chat/completions.
  */
 export function readLlmConfig(): LlmConfig {
-  const saved = readLocalStorage(CLOUD_PROVIDER_STORAGE_KEY);
-  const provider: CloudProviderId = CLOUD_PROVIDERS.some((option) => option.id === saved)
-    ? (saved as CloudProviderId)
-    : CLOUD_PROVIDERS[0].id;
+  const saved = readLocalStorage(LLM_PROVIDER_STORAGE_KEY);
+  const provider: CloudProviderId =
+    saved && saved !== "huggingface" && CLOUD_PROVIDERS.some((option) => option.id === saved)
+      ? (saved as CloudProviderId)
+      : "9router";
   return {
     provider,
     baseUrl: llmBaseUrl(provider),
@@ -89,17 +93,48 @@ function llmBaseUrl(provider: CloudProviderId): string {
   return cloudProvider(provider).baseUrl;
 }
 
-export function isLlmReady(config: LlmConfig): boolean {
-  return llmSupported(config.provider) && Boolean(config.baseUrl && config.apiKey && config.model);
+// A self-hosted gateway (9Router) and a user-supplied custom endpoint may run
+// without authentication — an empty key is a legitimate configuration there,
+// while OpenAI/Groq keys are account secrets that always exist.
+function llmKeyIsOptional(provider: CloudProviderId): boolean {
+  return provider === "9router" || provider === "custom";
 }
 
-async function chatCompletion(config: LlmConfig, system: string, user: string): Promise<string> {
+export function llmNotReadyReason(config: LlmConfig): string | null {
+  if (!llmSupported(config.provider)) {
+    return `${cloudProvider(config.provider).label} doesn't expose the chat endpoint these features need.`;
+  }
+  if (!config.baseUrl) {
+    return "No base URL is configured for this provider — add it in Settings → Summary & Translation.";
+  }
+  if (!config.model) {
+    return "No text model is configured — set one in Settings → Summary & Translation.";
+  }
+  if (!config.apiKey && !llmKeyIsOptional(config.provider)) {
+    return "No API key is configured — add one in Settings → Summary & Translation.";
+  }
+  return null;
+}
+
+export function isLlmReady(config: LlmConfig): boolean {
+  return llmNotReadyReason(config) === null;
+}
+
+async function chatCompletion(
+  config: LlmConfig,
+  system: string,
+  user: string,
+  signal?: AbortSignal,
+): Promise<string> {
   let response: Response;
   try {
     response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
+      signal,
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
+        // A gateway may run without auth — send the header only when there's
+        // actually a key to send.
+        ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -132,25 +167,75 @@ async function chatCompletion(config: LlmConfig, system: string, user: string): 
   return content;
 }
 
+/**
+ * Lists the model ids a provider offers, for the SettingsModal's "Load
+ * models" button: an OpenAI-style `GET {baseUrl}/models`, same optional auth
+ * as chatCompletion. Picking an id from this list is a convenience only — a
+ * model appearing here doesn't prove it can actually translate or summarize
+ * well.
+ */
+export async function listLlmModels(config: LlmConfig): Promise<string[]> {
+  let response: Response;
+  try {
+    response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/models`, {
+      headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : undefined,
+    });
+  } catch {
+    throw new Error(
+      "Couldn't reach the provider's models endpoint — check the base URL, your network " +
+        "connection, and that the provider allows direct requests from a browser (CORS).",
+    );
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Listing models failed (${response.status}): ${await readErrorDetail(response)}`,
+    );
+  }
+  const data: { data?: { id?: unknown }[] } = await response.json();
+  const ids = (data.data ?? [])
+    .map((item) => item?.id)
+    .filter((id): id is string => typeof id === "string");
+  return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+}
+
 // Bound per-request prompt size: hour-long transcripts run hundreds of lines,
 // and one request with all of them overflows smaller LLM context windows and
 // degrades translation quality. Sequential batches (never Promise.all — same
-// one-request-at-a-time politeness as the Whisper worker) also give per-batch
-// progress and keep alignment trivial: batch N's replies map back onto batch
-// N's segments one-for-one.
+// one-request-at-a-time politeness as the Whisper worker) also keep alignment
+// trivial: batch N's replies map back onto batch N's segments one-for-one.
 const MAX_CHARS_PER_REQUEST = 12000;
 
-export interface AiTextProgress {
-  doneSteps: number;
-  totalSteps: number;
+const TRANSLATOR_SYSTEM =
+  "You are a precise translator. You translate transcript lines exactly one for one, " +
+  "without merging, splitting, reordering, omitting, or adding any line.";
+
+/**
+ * Distinguishable from network/model errors on purpose: a misaligned reply
+ * (the model merged or split lines) is usually fixed by re-asking per line,
+ * so translateSegmentsResilient retries on exactly this class and nothing
+ * else — a dead endpoint or a bad key fails a 20-line batch just as fast as
+ * twenty single-line ones.
+ */
+export class TranslationMisalignedError extends Error {
+  constructor(expected: number) {
+    super(
+      `The translation came back misaligned (expected ${expected} lines) — try again, ` +
+        "or pick a stronger text model in Settings.",
+    );
+    this.name = "TranslationMisalignedError";
+  }
 }
 
-export async function translateTranscriptSegments(
+/**
+ * Translates each segment and returns the texts one-for-one with the input —
+ * the alignment contract every caller depends on.
+ */
+export async function translateSegmentTexts(
   config: LlmConfig,
   segments: TranscriptSegment[],
   targetLanguageName: string,
-  onProgress?: (progress: AiTextProgress) => void,
-): Promise<TranscriptSegment[]> {
+  signal?: AbortSignal,
+): Promise<string[]> {
   // Group whole segments into batches under the char budget (a single segment
   // over the budget still goes alone — splitting one utterance mid-line isn't
   // worth it).
@@ -169,30 +254,63 @@ export async function translateTranscriptSegments(
   }
   if (current.length > 0) batches.push(current);
 
-  const translated: TranscriptSegment[] = [];
-  for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
-    onProgress?.({ doneSteps: i, totalSteps: batches.length });
+  const texts: string[] = [];
+  for (const batch of batches) {
     const numbered = batch.map((segment, idx) => `${idx + 1}| ${segment.text}`).join("\n");
     const reply = await chatCompletion(
       config,
-      "You are a precise translator. You translate transcript lines exactly one for one, " +
-        "without merging, splitting, reordering, omitting, or adding any line.",
+      TRANSLATOR_SYSTEM,
       `Translate every line below into ${targetLanguageName}.\n` +
         `Reply with ONLY a JSON array of strings — one string per input line, in the same ` +
         `order, so the array length is exactly ${batch.length}.\n` +
         `Keep the meaning and tone; keep names, numbers, and technical terms intact.\n\n` +
         `Lines:\n${numbered}`,
+      signal,
     );
-    const parsed = parseJsonStringArray(reply, batch.length);
-    batch.forEach((segment, idx) => {
-      // Times and source tags mirror the original one-for-one so the
-      // translated view keeps click-to-seek and the MIC/TAB badges working.
-      translated.push({ time: segment.time, text: parsed[idx], source: segment.source });
-    });
+    texts.push(...parseJsonStringArray(reply, batch.length));
   }
-  onProgress?.({ doneSteps: batches.length, totalSteps: batches.length });
-  return translated;
+  return texts;
+}
+
+export async function translateTranscriptSegments(
+  config: LlmConfig,
+  segments: TranscriptSegment[],
+  targetLanguageName: string,
+  signal?: AbortSignal,
+): Promise<TranscriptSegment[]> {
+  const texts = await translateSegmentTexts(config, segments, targetLanguageName, signal);
+  // Times and source tags mirror the original one-for-one so the translated
+  // view keeps click-to-seek and the MIC/TAB badges working.
+  return segments.map((segment, idx) => ({
+    time: segment.time,
+    text: texts[idx],
+    source: segment.source,
+  }));
+}
+
+/**
+ * translateSegmentTexts with a repair pass for the one failure mode a retry
+ * can actually fix: a model that merged or split lines. Only a
+ * misalignment — not a network or auth error — triggers it, and only when
+ * there is more than one segment; each line is then translated in its own
+ * sequential request, which can't be misaligned into a wrong pairing.
+ */
+export async function translateSegmentsResilient(
+  config: LlmConfig,
+  segments: TranscriptSegment[],
+  targetLanguageName: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  try {
+    return await translateSegmentTexts(config, segments, targetLanguageName, signal);
+  } catch (error) {
+    if (!(error instanceof TranslationMisalignedError) || segments.length <= 1) throw error;
+    const texts: string[] = [];
+    for (const segment of segments) {
+      texts.push((await translateSegmentTexts(config, [segment], targetLanguageName, signal))[0]);
+    }
+    return texts;
+  }
 }
 
 /**
@@ -220,10 +338,7 @@ function parseJsonStringArray(reply: string, expectedLength: number): string[] {
     parsed.length !== expectedLength ||
     !parsed.every((item) => typeof item === "string")
   ) {
-    throw new Error(
-      `The translation came back misaligned (expected ${expectedLength} lines) — try again, ` +
-        "or pick a stronger text model in Settings.",
-    );
+    throw new TranslationMisalignedError(expectedLength);
   }
   return (parsed as string[]).map((item) => item.trim());
 }
