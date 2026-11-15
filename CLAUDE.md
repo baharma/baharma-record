@@ -259,14 +259,22 @@ Three invariants that each fixed a real bug:
   hook therefore tracks `Map<TranscriptSegment, string>` / `Set<TranscriptSegment>` keyed
   on the segment objects themselves (they're created once and preserved into the saved
   entry). Don't replace them with counts or clone segment objects.
-- **One scheduler, one request slot.** A single ~2 s interval decides between a summary
-  update (when one is "due") and translating up to 20 pending lines; independent timers
-  sharing one slot used to make a busy translation push the summary back a full interval.
-  Failed requests back off 10 s and pause scheduling entirely after 3 consecutive
-  failures (the card offers Retry) so a down provider doesn't produce a request per tick
-  for an hour. Every request captures a generation counter and discards its result when
-  the target language changed mid-request — otherwise an old-language reply lands in the
-  freshly cleared maps.
+- **Two independent lanes, never one shared queue.** Translation and summary each have
+  their own in-flight tracking, failure counter, backoff, and pause flag, so a slow
+  summary (the whole running text is rewritten each time) can't hold back translations
+  and one lane's failures never stop the other. The translation lane is event-driven — a
+  new final line pumps it immediately, up to 3 requests run concurrently over different
+  segments in small batches (4 lines, 20 once a backlog builds) with up to 3 earlier
+  lines sent as context-only prompt material — because work that only starts on a poll
+  falls further and further behind a live transcript. The interval is a safety net for
+  expired backoffs and the summary's due check. Every request carries its own
+  AbortController timeout (translation 20 s, summary 45 s) — a hung request used to
+  freeze both panels for the rest of the session. Failed requests back off 10 s and
+  pause that lane after 3 consecutive failures (the card offers Retry). Every request
+  captures a generation counter and discards its result when the target language changed
+  mid-request — otherwise an old-language reply lands in the freshly cleared maps. The
+  transcript lane itself never depends on either: `useRecordingSession` never awaits or
+  calls any AI code.
 - **Save first, attach AI text afterwards.** Stop used to await the AI flush *before*
   `onFinalized` — but once finalize has fired, `useRecordingSession`'s pagehide snapshot
   refuses to save, so closing the tab during that network wait lost the recording. Now

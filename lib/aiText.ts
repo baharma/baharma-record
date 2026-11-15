@@ -147,6 +147,10 @@ async function chatCompletion(
       }),
     });
   } catch {
+    if (signal?.aborted) {
+      // The abort came from the caller's timeout, not the network — say so.
+      throw new Error("The provider took too long to answer.");
+    }
     throw new Error(
       "Couldn't reach the provider's chat endpoint — check the base URL, your network " +
         "connection, and that the provider allows direct requests from a browser (CORS).",
@@ -159,7 +163,15 @@ async function chatCompletion(
     );
   }
 
-  const data: { choices?: { message?: { content?: string } }[] } = await response.json();
+  let data: { choices?: { message?: { content?: string } }[] };
+  try {
+    data = await response.json();
+  } catch {
+    if (signal?.aborted) {
+      throw new Error("The provider took too long to answer.");
+    }
+    throw new Error("The provider returned an unreadable response.");
+  }
   const content = data.choices?.[0]?.message?.content;
   if (typeof content !== "string" || content.trim().length === 0) {
     throw new Error("The provider returned an empty response.");
@@ -235,6 +247,7 @@ export async function translateSegmentTexts(
   segments: TranscriptSegment[],
   targetLanguageName: string,
   signal?: AbortSignal,
+  contextLines?: string[],
 ): Promise<string[]> {
   // Group whole segments into batches under the char budget (a single segment
   // over the budget still goes alone — splitting one utterance mid-line isn't
@@ -257,6 +270,15 @@ export async function translateSegmentTexts(
   const texts: string[] = [];
   for (const batch of batches) {
     const numbered = batch.map((segment, idx) => `${idx + 1}| ${segment.text}`).join("\n");
+    // Short live-transcript fragments translate poorly in isolation, so the
+    // caller can pass the lines directly before the batch as read-only
+    // context — clearly separated, and excluded from the reply contract
+    // (parseJsonStringArray still enforces one string per numbered line).
+    const contextBlock =
+      contextLines && contextLines.length > 0
+        ? "Earlier lines, for context only. Do NOT translate them and do NOT include them in " +
+          `your reply:\n${contextLines.join("\n")}\n\n`
+        : "";
     const reply = await chatCompletion(
       config,
       TRANSLATOR_SYSTEM,
@@ -264,7 +286,7 @@ export async function translateSegmentTexts(
         `Reply with ONLY a JSON array of strings — one string per input line, in the same ` +
         `order, so the array length is exactly ${batch.length}.\n` +
         `Keep the meaning and tone; keep names, numbers, and technical terms intact.\n\n` +
-        `Lines:\n${numbered}`,
+        `${contextBlock}Lines:\n${numbered}`,
       signal,
     );
     texts.push(...parseJsonStringArray(reply, batch.length));
@@ -300,14 +322,17 @@ export async function translateSegmentsResilient(
   segments: TranscriptSegment[],
   targetLanguageName: string,
   signal?: AbortSignal,
+  contextLines?: string[],
 ): Promise<string[]> {
   try {
-    return await translateSegmentTexts(config, segments, targetLanguageName, signal);
+    return await translateSegmentTexts(config, segments, targetLanguageName, signal, contextLines);
   } catch (error) {
     if (!(error instanceof TranslationMisalignedError) || segments.length <= 1) throw error;
     const texts: string[] = [];
     for (const segment of segments) {
-      texts.push((await translateSegmentTexts(config, [segment], targetLanguageName, signal))[0]);
+      texts.push(
+        (await translateSegmentTexts(config, [segment], targetLanguageName, signal, contextLines))[0],
+      );
     }
     return texts;
   }
@@ -401,12 +426,14 @@ export async function updateRunningSummary(
   previousSummary: string | null,
   transcriptText: string,
   languageName: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!previousSummary) {
     return chatCompletion(
       config,
       SUMMARIZER_SYSTEM,
       `Summarize the following live transcript so far, in ${languageName}.\n\n${transcriptText}`,
+      signal,
     );
   }
   return chatCompletion(
@@ -416,6 +443,7 @@ export async function updateRunningSummary(
       `also covers the new lines — keep what's still relevant, add what's new, drop nothing ` +
       `important. Reply with the full updated summary only, in ${languageName}.\n\n` +
       `CURRENT SUMMARY:\n${previousSummary}\n\nNEW TRANSCRIPT LINES:\n${transcriptText}`,
+    signal,
   );
 }
 

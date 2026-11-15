@@ -20,7 +20,11 @@ import {
   type RecordingEntry,
   type TranscriptSegment,
 } from "@/lib/types";
-import { TranscriptSourceBadge } from "./TranscriptSourceBadge";
+import {
+  LiveSummaryText,
+  LiveTranscriptLines,
+  LiveTranslationLines,
+} from "./LiveSessionPanels";
 
 interface Props {
   session: PendingSession;
@@ -107,11 +111,18 @@ export function ActiveSessionCard({
       onWarning,
     });
 
-  const { translations, summary, busy, error, paused, retry, finalize } = useLiveAiText(
-    transcriptSegments,
-    liveAiActive,
-    aiLanguage,
-  );
+  const {
+    translations,
+    summary,
+    translating,
+    summarizing,
+    translationError,
+    translationPaused,
+    summaryError,
+    summaryPaused,
+    retry,
+    finalize,
+  } = useLiveAiText(transcriptSegments, liveAiActive, aiLanguage);
 
   useEffect(() => {
     finalizeRef.current = finalize;
@@ -256,15 +267,7 @@ export function ActiveSessionCard({
                       <p className="text-zinc-500">Listening…</p>
                     ) : (
                       <>
-                        {transcriptSegments.map((segment, i) => (
-                          <p key={i} className="text-zinc-700 dark:text-zinc-300">
-                            <span className="mr-2 font-mono text-xs text-zinc-400">
-                              {formatDuration(segment.time)}
-                            </span>
-                            {isMixed && <TranscriptSourceBadge source={segment.source} />}
-                            {segment.text}
-                          </p>
-                        ))}
+                        <LiveTranscriptLines segments={transcriptSegments} isMixed={isMixed} />
                         {interimLine && <p className="italic text-zinc-400">{interimLine}</p>}
                       </>
                     )}
@@ -274,7 +277,7 @@ export function ActiveSessionCard({
                 <div>
                   <p className={panelLabelClass}>
                     Translation ({speechLanguageName(aiLanguage)})
-                    {busy === "translate" && (
+                    {translating && (
                       <span className="ml-1 font-normal normal-case">· working…</span>
                     )}
                   </p>
@@ -286,17 +289,11 @@ export function ActiveSessionCard({
                     {transcriptSegments.length === 0 ? (
                       <p className="text-zinc-500">Waiting for the first lines…</p>
                     ) : (
-                      transcriptSegments.map((segment, i) => (
-                        <p key={i} className="text-zinc-700 dark:text-zinc-300">
-                          <span className="mr-2 font-mono text-xs text-zinc-400">
-                            {formatDuration(segment.time)}
-                          </span>
-                          {isMixed && <TranscriptSourceBadge source={segment.source} />}
-                          {translations.get(segment) ?? (
-                            <span className="text-zinc-400">…</span>
-                          )}
-                        </p>
-                      ))
+                      <LiveTranslationLines
+                        segments={transcriptSegments}
+                        translations={translations}
+                        isMixed={isMixed}
+                      />
                     )}
                   </div>
                 </div>
@@ -304,7 +301,7 @@ export function ActiveSessionCard({
                 <div>
                   <p className={panelLabelClass}>
                     Summary ({speechLanguageName(aiLanguage)})
-                    {busy === "summary" && (
+                    {summarizing && (
                       <span className="ml-1 font-normal normal-case">· working…</span>
                     )}
                   </p>
@@ -314,9 +311,7 @@ export function ActiveSessionCard({
                     className={scrollBoxClass}
                   >
                     {summary ? (
-                      <p className="whitespace-pre-wrap leading-relaxed text-zinc-700 dark:text-zinc-300">
-                        {summary}
-                      </p>
+                      <LiveSummaryText summary={summary} />
                     ) : (
                       <p className="text-zinc-500">
                         The summary appears after the first few lines.
@@ -326,32 +321,58 @@ export function ActiveSessionCard({
                 </div>
               </div>
 
-              {paused ? (
-                <div
-                  className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-red-600 dark:text-red-400"
-                  role="status"
-                >
-                  <span>
-                    {error ?? "Live translation stopped after repeated failures."}
-                  </span>
-                  <button
-                    onClick={retry}
-                    className="rounded-md border border-red-300 px-2 py-0.5 font-medium hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950/40"
-                  >
-                    Retry
-                  </button>
-                  <button
-                    onClick={onOpenSettings}
-                    className="rounded-md border border-red-300 px-2 py-0.5 font-medium hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950/40"
-                  >
-                    Open Settings
-                  </button>
+              {(translationError || summaryError) && (
+                <div className="mt-1.5 space-y-1 text-xs" role="status">
+                  {translationError && (
+                    <div className="flex flex-wrap items-center gap-2 text-red-600 dark:text-red-400">
+                      <span>
+                        Translation: {translationError}
+                        {!translationPaused && " — retrying…"}
+                      </span>
+                      {translationPaused && (
+                        <>
+                          <button
+                            onClick={retry}
+                            className="rounded-md border border-red-300 px-2 py-0.5 font-medium hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950/40"
+                          >
+                            Retry
+                          </button>
+                          <button
+                            onClick={onOpenSettings}
+                            className="rounded-md border border-red-300 px-2 py-0.5 font-medium hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950/40"
+                          >
+                            Open Settings
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {summaryError && (
+                    <div className="flex flex-wrap items-center gap-2 text-red-600 dark:text-red-400">
+                      <span>
+                        Summary: {summaryError}
+                        {!summaryPaused && " — retrying…"}
+                      </span>
+                      {summaryPaused && (
+                        <>
+                          <button
+                            onClick={retry}
+                            className="rounded-md border border-red-300 px-2 py-0.5 font-medium hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950/40"
+                          >
+                            Retry
+                          </button>
+                          <button
+                            onClick={onOpenSettings}
+                            className="rounded-md border border-red-300 px-2 py-0.5 font-medium hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950/40"
+                          >
+                            Open Settings
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ) : error ? (
-                <p className="mt-1.5 text-xs text-red-600 dark:text-red-400" role="status">
-                  {error} — retrying…
-                </p>
-              ) : null}
+              )}
             </>
           ) : (
             <>
@@ -364,15 +385,7 @@ export function ActiveSessionCard({
                   <p className="text-zinc-500">Listening…</p>
                 ) : (
                   <>
-                    {transcriptSegments.map((segment, i) => (
-                      <p key={i} className="text-zinc-700 dark:text-zinc-300">
-                        <span className="mr-2 font-mono text-xs text-zinc-400">
-                          {formatDuration(segment.time)}
-                        </span>
-                        {isMixed && <TranscriptSourceBadge source={segment.source} />}
-                        {segment.text}
-                      </p>
-                    ))}
+                    <LiveTranscriptLines segments={transcriptSegments} isMixed={isMixed} />
                     {interimLine && <p className="italic text-zinc-400">{interimLine}</p>}
                   </>
                 )}
