@@ -263,18 +263,28 @@ Three invariants that each fixed a real bug:
   their own in-flight tracking, failure counter, backoff, and pause flag, so a slow
   summary (the whole running text is rewritten each time) can't hold back translations
   and one lane's failures never stop the other. The translation lane is event-driven — a
-  new final line pumps it immediately, up to 3 requests run concurrently over different
-  segments in small batches (4 lines, 20 once a backlog builds) with up to 3 earlier
-  lines sent as context-only prompt material — because work that only starts on a poll
-  falls further and further behind a live transcript. The interval is a safety net for
-  expired backoffs and the summary's due check. Every request carries its own
-  AbortController timeout (translation 20 s, summary 45 s) — a hung request used to
-  freeze both panels for the rest of the session. Failed requests back off 10 s and
-  pause that lane after 3 consecutive failures (the card offers Retry). Every request
-  captures a generation counter and discards its result when the target language changed
+  new final line pumps it immediately, up to 2 requests run concurrently over different
+  segments, and a batch goes out when 8 lines are waiting or the oldest has waited 4 s
+  (the 1 s interval tick releases it when no new line arrives), capped at 12 lines with
+  an adaptive limit that halves after a timeout and doubles back after a success; each
+  request carries a scaled timeout (15 s + 2 s/line, capped at 60 s) so big batches
+  aren't aborted by a small-batch deadline, and up to 3 earlier lines ride along as
+  context-only prompt material. The summary lane updates at most once a minute and only
+  when at least 5 unsummarized lines exist. Failed requests back off 10 s and pause that
+  lane after 3 consecutive failures (the card offers Retry). Every request captures a
+  generation counter and discards its result when the target language changed
   mid-request — otherwise an old-language reply lands in the freshly cleared maps. The
   transcript lane itself never depends on either: `useRecordingSession` never awaits or
   calls any AI code.
+- **Cost is a first-class constraint.** A real session through a reasoning-capable
+  gateway measured 87% of completion tokens spent on thinking and ~1,500 tokens billed
+  per 4-line batch, so every chat request asks for no thinking — `"stream": false` plus
+  `reasoning_effort: "none"` when the thinking setting is Off (9Router/custom only,
+  retried once without the field on a 400/422, then remembered per base URL + model) —
+  accepts SSE replies as well as JSON, strips `<think>` blocks from the content, and
+  reports token usage (`onLlmUsage`) that the card displays as a running
+  requests/tokens line with a warning when thinking tokens show up although thinking is
+  off.
 - **Save first, attach AI text afterwards.** Stop used to await the AI flush *before*
   `onFinalized` — but once finalize has fired, `useRecordingSession`'s pagehide snapshot
   refuses to save, so closing the tab during that network wait lost the recording. Now

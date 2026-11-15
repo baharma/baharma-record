@@ -91,6 +91,8 @@ export const cloudModelStorageKey = (provider: CloudProviderId) =>
 // and model keys are shared with the batch section so the same account only
 // ever gets entered once.
 export const LLM_PROVIDER_STORAGE_KEY = "baharma-record:llm-provider";
+/** "off" (default) asks reasoning-capable gateways not to think; "default" lets the model decide. */
+export const LLM_THINKING_STORAGE_KEY = "baharma-record:llm-thinking";
 export const cloudLlmModelStorageKey = (provider: CloudProviderId) =>
   `baharma-record:cloud-llm-model:${provider}`;
 export const DEFAULT_LLM_MODELS: Record<CloudProviderId, string> = {

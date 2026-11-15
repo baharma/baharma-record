@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   isLlmReady,
+  onLlmUsage,
   readLlmConfig,
   speechLanguageName,
   updateRunningSummary,
@@ -12,21 +13,26 @@ import {
 import type { TranscriptSegment, TranscriptSummary, TranscriptTranslation } from "@/lib/types";
 
 /** Translation lane: up to this many requests in flight at once. */
-const TRANSLATE_CONCURRENCY = 3;
-/** Normal batch size — small, for low latency. */
-const TRANSLATE_BATCH_LINES = 4;
-/** More pending lines than this means a backlog: switch to big batches. */
-const TRANSLATE_CATCHUP_THRESHOLD = 12;
-/** Backlog batch size. */
-const TRANSLATE_CATCHUP_BATCH_LINES = 20;
+const TRANSLATE_CONCURRENCY = 2;
+/** Wait this long after the oldest waiting line before a batch goes out... */
+const TRANSLATE_COLLECT_MS = 4000;
+/** ...or send at once when this many lines are already waiting. */
+const TRANSLATE_FLUSH_LINES = 8;
+/** Hard cap on lines per translation request. */
+const TRANSLATE_MAX_BATCH_LINES = 12;
+/** Per-request timeout, scaled with the batch: base + per-line, capped. */
+const TRANSLATE_TIMEOUT_BASE_MS = 15000;
+const TRANSLATE_TIMEOUT_PER_LINE_MS = 2000;
+const TRANSLATE_TIMEOUT_MAX_MS = 60000;
 /** Earlier lines sent as read-only context (never translated, never replied). */
 const TRANSLATE_CONTEXT_LINES = 3;
-/** Per-request timeout — a hung gateway must not freeze the lane forever. */
-const TRANSLATE_TIMEOUT_MS = 20000;
 /** Summary requests rewrite the whole running text; they get more time. */
 const SUMMARY_TIMEOUT_MS = 45000;
-/** Interval that only resumes work after a backoff and fires the summary's due check. */
-const SAFETY_TICK_MS = 2000;
+/**
+ * Interval that releases a collected batch when no new line arrives, resumes
+ * a lane whose backoff expired, and fires the summary's due check.
+ */
+const SAFETY_TICK_MS = 1000;
 /** After a failed request, wait this long before that lane's next attempt. */
 const ERROR_BACKOFF_MS = 10000;
 /** Stop scheduling a lane after this many consecutive failed requests (until retry()). */
@@ -35,8 +41,10 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const FINALIZE_TIMEOUT_MS = 30000;
 /** The first summary waits for this many final lines to exist. */
 const FIRST_SUMMARY_MIN_LINES = 3;
-/** Later summary updates run at most this often (when there's anything new). */
-const SUMMARY_MIN_INTERVAL_MS = 20000;
+/** Later summary updates run at most this often... */
+const SUMMARY_MIN_INTERVAL_MS = 60000;
+/** ...and only when at least this many unsummarized lines exist. */
+const SUMMARY_MIN_NEW_LINES = 5;
 
 export interface LiveAiFinalResult {
   translation?: TranscriptTranslation;
@@ -57,6 +65,14 @@ function freshLane(): LaneState {
 // Never mutated — the published snapshot a language switch ignores.
 const EMPTY_TRANSLATIONS = new Map<TranscriptSegment, string>();
 
+/** Running cost totals for the card's sub-line, accumulated per session. */
+export interface LiveAiUsageTotals {
+  requests: number;
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+}
+
 export interface LiveAiTextResult {
   /** Translated text per segment object — segments without an entry render a placeholder. */
   translations: Map<TranscriptSegment, string>;
@@ -64,6 +80,8 @@ export interface LiveAiTextResult {
   /** At least one translation request is in flight (panel "working…" hint). */
   translating: boolean;
   summarizing: boolean;
+  /** Running request/token totals from every chat request the app makes. */
+  usage: LiveAiUsageTotals;
   translationError: string | null;
   translationPaused: boolean;
   summaryError: string | null;
@@ -136,6 +154,14 @@ export function useLiveAiText(
   }>({ generation: 0, translations: EMPTY_TRANSLATIONS, summary: null });
   const [translating, setTranslating] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
+  // Kept for the whole session (not reset on a language switch) so the cost
+  // shown is the session's true total.
+  const [usage, setUsage] = useState<LiveAiUsageTotals>({
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    reasoningTokens: 0,
+  });
   const [translationError, setTranslationError] = useState<string | null>(null);
   const [translationPaused, setTranslationPaused] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -154,11 +180,15 @@ export function useLiveAiText(
 
   // Translation lane: segments inside a request right now, the running
   // requests, their abort controllers (so a language switch can abort them),
-  // and the lane's own failure state.
+  // and the lane's own failure state. firstSeen backs the collect window
+  // (how long the oldest waiting line has waited); batchLimit is the
+  // adaptive batch size — halved after a timeout, doubled back after success.
   const translatingRef = useRef(new Set<TranscriptSegment>());
   const translateInFlightRef = useRef(new Set<Promise<void>>());
   const translateControllersRef = useRef(new Set<AbortController>());
   const translateLaneRef = useRef(freshLane());
+  const firstSeenRef = useRef(new Map<TranscriptSegment, number>());
+  const batchLimitRef = useRef(TRANSLATE_MAX_BATCH_LINES);
   // Summary lane: one request at a time, its own failure state.
   const summaryInFlightRef = useRef<Promise<void> | null>(null);
   const summaryControllerRef = useRef<AbortController | null>(null);
@@ -191,6 +221,8 @@ export function useLiveAiText(
     translationsRef.current = new Map();
     summarizedRef.current = new Set();
     summaryRef.current = null;
+    firstSeenRef.current.clear();
+    batchLimitRef.current = TRANSLATE_MAX_BATCH_LINES;
     translateLaneRef.current = freshLane();
     summaryLaneRef.current = freshLane();
     // Abort everything still running for the old language; their finally
@@ -241,7 +273,18 @@ export function useLiveAiText(
       const generation = generationRef.current;
       const controller = new AbortController();
       translateControllersRef.current.add(controller);
-      const timer = setTimeout(() => controller.abort(), TRANSLATE_TIMEOUT_MS);
+      // The timeout scales with the batch: a 12-line request legitimately
+      // takes longer than a 4-line one, and a fixed timeout used to abort
+      // exactly the batches that needed the most time.
+      const timeoutMs = Math.min(
+        TRANSLATE_TIMEOUT_MAX_MS,
+        TRANSLATE_TIMEOUT_BASE_MS + batch.length * TRANSLATE_TIMEOUT_PER_LINE_MS,
+      );
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
       setTranslating(true);
       // Context: the lines directly before the batch in the current array —
       // fragments translate poorly in isolation. Context only; the reply
@@ -267,10 +310,21 @@ export function useLiveAiText(
           if (generationRef.current !== generation) return;
           batch.forEach((segment, i) => translationsRef.current.set(segment, texts[i]));
           translateLaneRef.current.failures = 0;
+          // Success lets the batch size grow back toward the cap.
+          batchLimitRef.current = Math.min(
+            TRANSLATE_MAX_BATCH_LINES,
+            batchLimitRef.current * 2,
+          );
           setTranslationError(null);
           publish();
         } catch (error) {
           if (generationRef.current !== generation) return;
+          // A timeout means the batch was too big for the model's speed —
+          // halve it so the retry (which would otherwise resend the same
+          // oversized, already-billed batch) has a chance to fit.
+          if (timedOut) {
+            batchLimitRef.current = Math.max(1, Math.floor(batchLimitRef.current / 2));
+          }
           failLane("translate", error instanceof Error ? error.message : "Translation failed.");
         } finally {
           clearTimeout(timer);
@@ -292,19 +346,23 @@ export function useLiveAiText(
     if (!enabledRef.current) return;
     const config = readLlmConfig();
     if (!isLlmReady(config)) return;
+    // Collect-then-send: a batch goes out when enough lines are waiting, or
+    // when the oldest waiting line has been waiting for the collect window —
+    // whichever comes first. Fewer, larger requests instead of one per line,
+    // because every request pays the same fixed prompt/billing overhead.
     while (translateInFlightRef.current.size < TRANSLATE_CONCURRENCY) {
-      const pending = segmentsRef.current.filter(
+      const waiting = segmentsRef.current.filter(
         (segment) =>
           !translationsRef.current.has(segment) && !translatingRef.current.has(segment),
       );
-      if (pending.length === 0) break;
-      const size =
-        pending.length > TRANSLATE_CATCHUP_THRESHOLD
-          ? TRANSLATE_CATCHUP_BATCH_LINES
-          : TRANSLATE_BATCH_LINES;
-      // Oldest first (array order); a segment is marked translating BEFORE
-      // the request starts so it can never be in two requests at once.
-      const batch = pending.slice(0, size);
+      if (waiting.length === 0) break;
+      const oldestFirstSeen = firstSeenRef.current.get(waiting[0]) ?? Date.now();
+      const collectElapsed = Date.now() - oldestFirstSeen >= TRANSLATE_COLLECT_MS;
+      if (waiting.length < TRANSLATE_FLUSH_LINES && !collectElapsed) break;
+      // Oldest first (array order), capped by the adaptive batch limit; a
+      // segment is marked translating BEFORE the request starts so it can
+      // never be in two requests at once.
+      const batch = waiting.slice(0, Math.min(batchLimitRef.current, waiting.length));
       batch.forEach((segment) => translatingRef.current.add(segment));
       startTranslate(config, batch);
     }
@@ -325,11 +383,15 @@ export function useLiveAiText(
     const pendingSummary = currentSegments.filter(
       (segment) => !summarizedRef.current.has(segment),
     );
+    // After the first summary exists, an update is due only when enough new
+    // material exists AND the interval has passed — each update rewrites the
+    // whole summary, so running it on every trickle is pure cost.
     const summaryDue =
       pendingSummary.length > 0 &&
       (summaryRef.current === null
         ? currentSegments.length >= FIRST_SUMMARY_MIN_LINES
-        : Date.now() - lastSummaryAtRef.current >= SUMMARY_MIN_INTERVAL_MS);
+        : pendingSummary.length >= SUMMARY_MIN_NEW_LINES &&
+          Date.now() - lastSummaryAtRef.current >= SUMMARY_MIN_INTERVAL_MS);
     if (!summaryDue) return;
 
     const generation = generationRef.current;
@@ -375,12 +437,18 @@ export function useLiveAiText(
     summaryInFlightRef.current = promise;
   }, [publish, failLane]);
 
-  // Event-driven triggers: a new final line pumps both lanes right away (a
-  // line is translated as soon as a slot is free, not on the next poll).
-  // The timeout defers the call out of the effect body — the linter (rightly)
-  // forbids synchronous state updates from effects, and the pumps set their
-  // working flags when they start a request.
+  // Event-driven triggers: a new final line records when it first appeared
+  // (for the collect window) and pumps both lanes right away. The timeout
+  // defers the call out of the effect body — the linter (rightly) forbids
+  // synchronous state updates from effects, and the pumps set their working
+  // flags when they start a request.
   useEffect(() => {
+    const now = Date.now();
+    for (const segment of segments) {
+      if (!firstSeenRef.current.has(segment)) {
+        firstSeenRef.current.set(segment, now);
+      }
+    }
     const timer = setTimeout(() => {
       pumpTranslation();
       pumpSummary();
@@ -388,8 +456,9 @@ export function useLiveAiText(
     return () => clearTimeout(timer);
   }, [segments, pumpTranslation, pumpSummary]);
 
-  // Safety net only: resumes a lane whose backoff expired and fires the
-  // summary's due check even when no new line arrives.
+  // Safety net: with the collect window, this tick is what releases a batch
+  // when no new line arrives; it also resumes a lane whose backoff expired
+  // and fires the summary's due check.
   useEffect(() => {
     const timer = setInterval(() => {
       pumpTranslation();
@@ -397,6 +466,21 @@ export function useLiveAiText(
     }, SAFETY_TICK_MS);
     return () => clearInterval(timer);
   }, [pumpTranslation, pumpSummary]);
+
+  // Cost tracking: the listener is app-wide, so with two sessions recording
+  // at once each card shows the combined total of every chat request the app
+  // makes (detail-view Translate/Summarize included). Acceptable for a cost
+  // indicator; totals are kept for the whole session.
+  useEffect(() => {
+    return onLlmUsage((u) => {
+      setUsage((prev) => ({
+        requests: prev.requests + 1,
+        promptTokens: prev.promptTokens + u.promptTokens,
+        completionTokens: prev.completionTokens + u.completionTokens,
+        reasoningTokens: prev.reasoningTokens + u.reasoningTokens,
+      }));
+    });
+  }, []);
 
   const retry = useCallback(() => {
     translateLaneRef.current = freshLane();
@@ -437,8 +521,8 @@ export function useLiveAiText(
             const languageName = speechLanguageName(languageRef.current);
             const translateTask = (async () => {
               const pending = finalSegments.filter((s) => !translationsRef.current.has(s));
-              for (let i = 0; i < pending.length; i += TRANSLATE_CATCHUP_BATCH_LINES) {
-                const batch = pending.slice(i, i + TRANSLATE_CATCHUP_BATCH_LINES);
+              for (let i = 0; i < pending.length; i += TRANSLATE_MAX_BATCH_LINES) {
+                const batch = pending.slice(i, i + TRANSLATE_MAX_BATCH_LINES);
                 try {
                   const texts = await translateSegmentsResilient(
                     config,
@@ -513,6 +597,7 @@ export function useLiveAiText(
     summary: currentSnapshot.summary,
     translating,
     summarizing,
+    usage,
     translationError,
     translationPaused,
     summaryError,

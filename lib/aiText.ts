@@ -21,6 +21,7 @@ import {
   CLOUD_PROVIDERS,
   DEFAULT_LLM_MODELS,
   LLM_PROVIDER_STORAGE_KEY,
+  LLM_THINKING_STORAGE_KEY,
   NINE_ROUTER_BASE_URL_STORAGE_KEY,
   cloudApiKeyStorageKey,
   cloudLlmModelStorageKey,
@@ -51,6 +52,8 @@ export interface LlmConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** "off" (default) asks reasoning-capable gateways not to think — see chatCompletion. */
+  thinking: "off" | "default";
 }
 
 /** Resolves the display name for a speech-language code, e.g. "id" → "Indonesian". */
@@ -79,6 +82,9 @@ export function readLlmConfig(): LlmConfig {
     model:
       readLocalStorage(cloudLlmModelStorageKey(provider))?.trim() ||
       DEFAULT_LLM_MODELS[provider],
+    // Anything but an explicit "default" counts as off — a missing key must
+    // never silently turn thinking (and its cost) back on.
+    thinking: readLocalStorage(LLM_THINKING_STORAGE_KEY) === "default" ? "default" : "off",
   };
 }
 
@@ -120,41 +126,166 @@ export function isLlmReady(config: LlmConfig): boolean {
   return llmNotReadyReason(config) === null;
 }
 
+/** Token usage of one chat request, as billed by the provider. */
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+}
+
+type UsageListener = (usage: LlmUsage) => void;
+const usageListeners = new Set<UsageListener>();
+
+/** Subscribe to the usage of every chat request; returns an unsubscribe function. */
+export function onLlmUsage(listener: UsageListener): () => void {
+  usageListeners.add(listener);
+  return () => {
+    usageListeners.delete(listener);
+  };
+}
+
+function reportUsage(usage: LlmUsage) {
+  for (const listener of usageListeners) {
+    try {
+      listener(usage);
+    } catch {
+      // A broken listener must never break the request itself.
+    }
+  }
+}
+
+interface RawUsage {
+  prompt_tokens?: unknown;
+  completion_tokens?: unknown;
+  completion_tokens_details?: { reasoning_tokens?: unknown };
+}
+
+function readUsage(raw: RawUsage): LlmUsage {
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return {
+    promptTokens: count(raw.prompt_tokens),
+    completionTokens: count(raw.completion_tokens),
+    reasoningTokens: count(raw.completion_tokens_details?.reasoning_tokens),
+  };
+}
+
+/**
+ * Gateways that reject reasoning_effort are remembered per base URL + model,
+ * so later requests for the same pair skip the field from the start instead
+ * of paying a failed request every time.
+ */
+const reasoningUnsupported = new Set<string>();
+
+interface ChatReplyParts {
+  content: string;
+  usage: LlmUsage | null;
+}
+
+interface ChatChunk {
+  choices?: { message?: { content?: string }; delta?: { content?: string } }[];
+  usage?: RawUsage;
+}
+
+/**
+ * Accepts both reply shapes a gateway may produce: a plain JSON body
+ * (choices[0].message.content) or an SSE stream (choices[0].delta.content
+ * appended across data: lines). SSE reasoning_content is ignored — it's the
+ * model's thinking, never part of the translation/summary. Usage comes from
+ * the last chunk that carries a usage object.
+ */
+function parseChatReply(text: string, contentType: string): ChatReplyParts {
+  const isSse = contentType.includes("text/event-stream") || text.startsWith("data:");
+  if (isSse) {
+    let content = "";
+    let usage: LlmUsage | null = null;
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let chunk: ChatChunk;
+      try {
+        chunk = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (typeof delta === "string") content += delta;
+      if (chunk.usage) usage = readUsage(chunk.usage);
+    }
+    return { content, usage };
+  }
+  const data = JSON.parse(text) as ChatChunk;
+  const message = data.choices?.[0]?.message?.content;
+  return {
+    content: typeof message === "string" ? message : "",
+    usage: data.usage ? readUsage(data.usage) : null,
+  };
+}
+
 async function chatCompletion(
   config: LlmConfig,
   system: string,
   user: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  let response: Response;
-  try {
-    response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      signal,
-      headers: {
-        // A gateway may run without auth — send the header only when there's
-        // actually a key to send.
-        ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        temperature: 0.2,
-      }),
-    });
-  } catch {
-    if (signal?.aborted) {
-      // The abort came from the caller's timeout, not the network — say so.
-      throw new Error("The provider took too long to answer.");
+  const baseUrl = config.baseUrl.replace(/\/+$/, "");
+  // 9Router reads reasoning_effort from the body to pick a thinking level and
+  // advertises "none" for models whose thinking can be disabled — a trivial
+  // translation must not pay for thinking. Sent only for gateways (never for
+  // OpenAI/Groq, whose semantics for the field are unverified here), and
+  // skipped for pairs already known to reject it.
+  const reasoningKey = `${baseUrl}|${config.model}`;
+  const wantsNoThinking =
+    config.thinking === "off" &&
+    (config.provider === "9router" || config.provider === "custom") &&
+    !reasoningUnsupported.has(reasoningKey);
+
+  const buildBody = (withReasoning: boolean) => ({
+    model: config.model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    temperature: 0.2,
+    // Explicit: a gateway that answers with an SSE stream anyway is handled,
+    // but one that only streams when asked to should not.
+    stream: false as const,
+    ...(withReasoning ? { reasoning_effort: "none" } : {}),
+  });
+
+  const postChat = async (body: unknown): Promise<Response> => {
+    try {
+      return await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        signal,
+        headers: {
+          // A gateway may run without auth — send the header only when
+          // there's actually a key to send.
+          ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      if (signal?.aborted) {
+        // The abort came from the caller's timeout, not the network — say so.
+        throw new Error("The provider took too long to answer.");
+      }
+      throw new Error(
+        "Couldn't reach the provider's chat endpoint — check the base URL, your network " +
+          "connection, and that the provider allows direct requests from a browser (CORS).",
+      );
     }
-    throw new Error(
-      "Couldn't reach the provider's chat endpoint — check the base URL, your network " +
-        "connection, and that the provider allows direct requests from a browser (CORS).",
-    );
+  };
+
+  let response = await postChat(buildBody(wantsNoThinking));
+  // Not every upstream accepts the field — a 400/422 to a request that
+  // included it is retried once without it, and the pair is remembered.
+  if (wantsNoThinking && (response.status === 400 || response.status === 422)) {
+    reasoningUnsupported.add(reasoningKey);
+    response = await postChat(buildBody(false));
   }
 
   if (!response.ok) {
@@ -163,30 +294,58 @@ async function chatCompletion(
     );
   }
 
-  let data: { choices?: { message?: { content?: string } }[] };
+  let text: string;
   try {
-    data = await response.json();
+    text = await response.text();
   } catch {
     if (signal?.aborted) {
       throw new Error("The provider took too long to answer.");
     }
     throw new Error("The provider returned an unreadable response.");
   }
-  const content = data.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || content.trim().length === 0) {
+
+  let parts: ChatReplyParts;
+  try {
+    parts = parseChatReply(text, response.headers.get("Content-Type") ?? "");
+  } catch {
+    if (signal?.aborted) {
+      throw new Error("The provider took too long to answer.");
+    }
+    throw new Error("The provider returned an unreadable response.");
+  }
+  if (parts.usage) {
+    // The request was billed whether or not the content is usable — report
+    // before any content checks.
+    reportUsage(parts.usage);
+  }
+
+  // Some models emit a thinking block inside the content itself; it's not
+  // part of the translation/summary.
+  const content = parts.content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  if (content.length === 0) {
     throw new Error("The provider returned an empty response.");
   }
   return content;
 }
 
+/** One entry of the provider's /models list, with its thinking capabilities. */
+export interface LlmModelInfo {
+  id: string;
+  /** The model does reasoning ("thinking") by default. */
+  reasoning: boolean;
+  /** Whether the gateway claims thinking can be disabled for it. */
+  thinkingCanDisable: boolean;
+}
+
 /**
- * Lists the model ids a provider offers, for the SettingsModal's "Load
- * models" button: an OpenAI-style `GET {baseUrl}/models`, same optional auth
- * as chatCompletion. Picking an id from this list is a convenience only — a
- * model appearing here doesn't prove it can actually translate or summarize
- * well.
+ * Lists a provider's models with their thinking capabilities, for the
+ * SettingsModal's "Load models" button: an OpenAI-style `GET {baseUrl}/models`,
+ * same optional auth as chatCompletion. Picking an id from this list is a
+ * convenience only — a model appearing here doesn't prove it can actually
+ * translate or summarize well. Capabilities default to non-reasoning /
+ * thinking-can-disable when a gateway doesn't advertise them.
  */
-export async function listLlmModels(config: LlmConfig): Promise<string[]> {
+export async function listLlmModels(config: LlmConfig): Promise<LlmModelInfo[]> {
   let response: Response;
   try {
     response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/models`, {
@@ -203,11 +362,19 @@ export async function listLlmModels(config: LlmConfig): Promise<string[]> {
       `Listing models failed (${response.status}): ${await readErrorDetail(response)}`,
     );
   }
-  const data: { data?: { id?: unknown }[] } = await response.json();
-  const ids = (data.data ?? [])
-    .map((item) => item?.id)
-    .filter((id): id is string => typeof id === "string");
-  return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
+  const data: {
+    data?: { id?: unknown; capabilities?: { reasoning?: unknown; thinkingCanDisable?: unknown } }[];
+  } = await response.json();
+  const byId = new Map<string, LlmModelInfo>();
+  for (const item of data.data ?? []) {
+    if (typeof item?.id !== "string" || byId.has(item.id)) continue;
+    byId.set(item.id, {
+      id: item.id,
+      reasoning: item.capabilities?.reasoning === true,
+      thinkingCanDisable: item.capabilities?.thinkingCanDisable !== false,
+    });
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 // Bound per-request prompt size: hour-long transcripts run hundreds of lines,
@@ -432,7 +599,9 @@ export async function updateRunningSummary(
     return chatCompletion(
       config,
       SUMMARIZER_SYSTEM,
-      `Summarize the following live transcript so far, in ${languageName}.\n\n${transcriptText}`,
+      `Summarize the following live transcript so far, in ${languageName}. Keep the summary ` +
+        `to at most 12 short bullet points; when it would grow beyond that, merge older ` +
+        `points instead of adding more.\n\n${transcriptText}`,
       signal,
     );
   }
@@ -441,7 +610,9 @@ export async function updateRunningSummary(
     SUMMARIZER_SYSTEM,
     `You maintain a running summary of a live transcript. Update the summary below so it ` +
       `also covers the new lines — keep what's still relevant, add what's new, drop nothing ` +
-      `important. Reply with the full updated summary only, in ${languageName}.\n\n` +
+      `important. Keep the summary to at most 12 short bullet points; when it would grow ` +
+      `beyond that, merge older points instead of adding more. Reply with the full updated ` +
+      `summary only, in ${languageName}.\n\n` +
       `CURRENT SUMMARY:\n${previousSummary}\n\nNEW TRANSCRIPT LINES:\n${transcriptText}`,
     signal,
   );

@@ -43,6 +43,12 @@ interface Props {
 /** How close to the bottom (px) still counts as "following the live feed". */
 const STICK_TO_BOTTOM_THRESHOLD = 24;
 
+/** "867" / "21.3k" — the card's compact token count format. */
+function formatTokenCount(tokens: number): string {
+  if (tokens < 1000) return String(tokens);
+  return `${(tokens / 1000).toFixed(1)}k`;
+}
+
 export function ActiveSessionCard({
   session,
   onFinalized,
@@ -116,6 +122,7 @@ export function ActiveSessionCard({
     summary,
     translating,
     summarizing,
+    usage,
     translationError,
     translationPaused,
     summaryError,
@@ -209,6 +216,16 @@ export function ActiveSessionCard({
               <>
                 {" · "}
                 {cloudProvider(llmConfig.provider).label} · {llmConfig.model}
+                {usage.requests > 0 && (
+                  <>
+                    {" · "}
+                    {`AI: ${usage.requests} requests · ${formatTokenCount(
+                      usage.promptTokens + usage.completionTokens,
+                    )} tokens`}
+                    {usage.reasoningTokens > 0 &&
+                      ` (${formatTokenCount(usage.reasoningTokens)} thinking)`}
+                  </>
+                )}
               </>
             )}
           </p>
@@ -371,6 +388,24 @@ export function ActiveSessionCard({
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {llmConfig.thinking === "off" && usage.reasoningTokens > 0 && (
+                <div
+                  className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-amber-600 dark:text-amber-400"
+                  role="status"
+                >
+                  <span>
+                    The model is still thinking even though thinking is off, which makes live
+                    translation slow and expensive — a model without thinking should be chosen.
+                  </span>
+                  <button
+                    onClick={onOpenSettings}
+                    className="rounded-md border border-amber-400 px-2 py-0.5 font-medium hover:bg-amber-50 dark:border-amber-700 dark:hover:bg-amber-950/40"
+                  >
+                    Open Settings
+                  </button>
                 </div>
               )}
             </>

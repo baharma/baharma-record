@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { listLlmModels, readLlmConfig } from "@/lib/aiText";
+import { listLlmModels, readLlmConfig, type LlmModelInfo } from "@/lib/aiText";
 import { readLocalStorage, writeLocalStorage } from "@/lib/localStorage";
 import {
   CLOUD_BASE_URL_STORAGE_KEY,
@@ -9,6 +9,7 @@ import {
   CLOUD_PROVIDERS,
   DEFAULT_LLM_MODELS,
   LLM_PROVIDER_STORAGE_KEY,
+  LLM_THINKING_STORAGE_KEY,
   NINE_ROUTER_BASE_URL_STORAGE_KEY,
   cloudApiKeyStorageKey,
   cloudLlmModelStorageKey,
@@ -79,7 +80,13 @@ export function SettingsModal({ onClose }: Props) {
   const [llmModel, setLlmModel] = useState(
     () => readLocalStorage(cloudLlmModelStorageKey(llmProviderId)) ?? "",
   );
-  const [llmModels, setLlmModels] = useState<string[]>([]);
+  // Thinking control: "off" asks reasoning-capable gateways not to think
+  // (the cheap, fast default for live translation); "default" lets the
+  // model/gateway decide.
+  const [llmThinking, setLlmThinking] = useState<"off" | "default">(() =>
+    readLocalStorage(LLM_THINKING_STORAGE_KEY) === "default" ? "default" : "off",
+  );
+  const [llmModels, setLlmModels] = useState<LlmModelInfo[]>([]);
   const [llmModelsStatus, setLlmModelsStatus] = useState<string | null>(null);
   const [llmModelsLoading, setLlmModelsLoading] = useState(false);
 
@@ -123,7 +130,7 @@ export function SettingsModal({ onClose }: Props) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div
-        className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-950"
+        className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-950"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
@@ -245,8 +252,10 @@ export function SettingsModal({ onClose }: Props) {
             Used by the &quot;Translate&quot; / &quot;Summarize&quot; buttons in a recording&apos;s
             transcript view and by the live card&apos;s translation while recording — through the
             provider&apos;s chat endpoint. Has its own provider choice below, defaulting to a
-            locally-running 9Router gateway, which may run without an API key. Hugging Face
-            doesn&apos;t expose the chat shape these features need.
+            locally-running 9Router gateway, which may run without an API key. The thinking
+            setting asks reasoning-capable models to skip thinking; a reasoning model that can&apos;t
+            disable it will make every request slower and costlier. Hugging Face doesn&apos;t expose
+            the chat shape these features need.
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             <select
@@ -338,12 +347,43 @@ export function SettingsModal({ onClose }: Props) {
               {llmModelsLoading ? "Loading…" : "Load models"}
             </button>
           </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <select
+              value={llmThinking}
+              onChange={(event) => {
+                const next = event.target.value as "off" | "default";
+                setLlmThinking(next);
+                writeLocalStorage(LLM_THINKING_STORAGE_KEY, next);
+              }}
+              className="rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+              title="Asks reasoning-capable gateways not to think — thinking is the main reason live translation gets slow and expensive"
+            >
+              <option value="off">Thinking: Off (faster, cheaper)</option>
+              <option value="default">Thinking: Model default</option>
+            </select>
+          </div>
           <datalist id="llm-model-options">
-            {llmModels.map((id) => (
-              <option key={id} value={id} />
+            {llmModels.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.reasoning
+                  ? `${model.id} — ${model.thinkingCanDisable ? "thinking" : "always thinking"}`
+                  : model.id}
+              </option>
             ))}
           </datalist>
           {llmModelsStatus && <p className="mt-1 text-xs text-zinc-500">{llmModelsStatus}</p>}
+          {(() => {
+            // The effective model id: what was typed, or the provider default
+            // that will actually be used when the field is left empty.
+            const effectiveModel = llmModel.trim() || DEFAULT_LLM_MODELS[llmProviderId];
+            const typed = llmModels.find((model) => model.id === effectiveModel);
+            if (!typed || !typed.reasoning || typed.thinkingCanDisable) return null;
+            return (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                This model always thinks, so live translation with it will be slow and costly.
+              </p>
+            );
+          })()}
         </section>
 
         <button
