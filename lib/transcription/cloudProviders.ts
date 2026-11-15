@@ -18,8 +18,16 @@
  * form field) and gets its own code path in cloudTranscribe.ts — but it's
  * included here as a preset for the same reason Groq is: a genuinely free
  * tier, not just pay-as-you-go.
+ *
+ * 9Router (https://github.com/decolua/9router) is a self-hosted
+ * OpenAI-compatible AI gateway whose STT endpoint is that same multipart
+ * `/v1/audio/transcriptions` shape, so it rides the shared request builder
+ * too. It gets its own preset (rather than being left to "custom") because
+ * its default origin is a locally running gateway and its key/URL can come
+ * from build-time env vars instead of localStorage — both 9Router-specific
+ * concerns the generic providers don't have.
  */
-export type CloudProviderId = "openai" | "groq" | "huggingface" | "custom";
+export type CloudProviderId = "openai" | "groq" | "huggingface" | "9router" | "custom";
 
 export interface CloudProviderOption {
   id: CloudProviderId;
@@ -28,6 +36,15 @@ export interface CloudProviderOption {
   baseUrl: string;
   defaultModel: string;
 }
+
+/**
+ * Default origin of a locally running 9Router instance (see the RINGKASAN
+ * rebuild notes). Stored /v1-suffixed because the OpenAI-compatible request
+ * builder appends only "/audio/transcriptions" — and
+ * normalizeNineRouterBaseUrl appends "/v1" exactly once, so a user pasting
+ * the bare origin into the override field works too.
+ */
+export const NINE_ROUTER_DEFAULT_BASE_URL = "http://127.0.0.1:20128/v1";
 
 export const CLOUD_PROVIDERS: CloudProviderOption[] = [
   { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "whisper-1" },
@@ -42,6 +59,15 @@ export const CLOUD_PROVIDERS: CloudProviderOption[] = [
     label: "Hugging Face — free tier",
     baseUrl: "https://router.huggingface.co/hf-inference/models",
     defaultModel: "openai/whisper-large-v3",
+  },
+  {
+    id: "9router",
+    label: "9Router (self-hosted gateway)",
+    // The gateway forwards to whichever upstream STT provider is configured
+    // in it, so the expected model id depends on that upstream — this is just
+    // the common OpenAI-style default; edit it to match the gateway's setup.
+    baseUrl: NINE_ROUTER_DEFAULT_BASE_URL,
+    defaultModel: "whisper-1",
   },
   { id: "custom", label: "Custom (OpenAI-compatible)", baseUrl: "", defaultModel: "whisper-1" },
 ];
@@ -59,6 +85,63 @@ export const cloudApiKeyStorageKey = (provider: CloudProviderId) =>
   `baharma-record:cloud-api-key:${provider}`;
 export const cloudModelStorageKey = (provider: CloudProviderId) =>
   `baharma-record:cloud-model:${provider}`;
+// 9Router's gateway origin gets its own override key (CLOUD_BASE_URL_STORAGE_KEY
+// belongs to the "custom" provider) — a 9Router instance may run on another
+// port or a remote host, and that choice shouldn't clobber a separately
+// configured custom endpoint.
+export const NINE_ROUTER_BASE_URL_STORAGE_KEY = "baharma-record:9router-base-url";
+
+// Build-time env fallbacks for 9Router, so a fixed gateway setup (e.g. the
+// planned desktop rebuild, where the gateway origin is known ahead of time)
+// doesn't require typing the key into every browser profile. NEXT_PUBLIC_*
+// vars are inlined into the client bundle at build time by Next.js — changing
+// them needs a dev-server restart or a rebuild, which is also why they're a
+// fallback rather than the primary source: a value typed in the UI (or saved
+// in localStorage) always wins, and stays editable at runtime.
+export function nineRouterEnvApiKey(): string {
+  return process.env.NEXT_PUBLIC_9ROUTER_API_KEY?.trim() ?? "";
+}
+
+export function nineRouterEnvBaseUrl(): string {
+  return process.env.NEXT_PUBLIC_9ROUTER_BASE_URL?.trim() ?? "";
+}
+
+/**
+ * Appends "/v1" exactly once: 9Router's API lives at `{origin}/v1/...` and
+ * users naturally paste either the bare origin (`http://127.0.0.1:20128`) or
+ * the full base (`.../v1`) — accepting both without ever doubling the suffix
+ * (the rebuild notes flag double-"/v1" as the classic integration mistake).
+ */
+export function normalizeNineRouterBaseUrl(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+}
+
+/**
+ * The base URL actually used for a 9Router request: the origin saved in the
+ * UI, else NEXT_PUBLIC_9ROUTER_BASE_URL, else the default local gateway —
+ * normalized to end in "/v1" whichever way it resolves.
+ */
+export function nineRouterBaseUrl(savedOverride: string | null | undefined): string {
+  const chosen = savedOverride?.trim() || nineRouterEnvBaseUrl() || NINE_ROUTER_DEFAULT_BASE_URL;
+  return normalizeNineRouterBaseUrl(chosen);
+}
+
+/**
+ * The API key actually sent for a cloud run: what the user saved if they
+ * typed one, else — 9Router only — the build-time env value. Other providers
+ * get no env fallback (their keys are per-user account secrets typed per
+ * browser), while a self-hosted gateway commonly runs with one gateway token
+ * that env config expresses well.
+ */
+export function effectiveCloudApiKey(
+  provider: CloudProviderId,
+  savedKey: string | null | undefined,
+): string {
+  if (savedKey && savedKey.trim().length > 0) return savedKey.trim();
+  return provider === "9router" ? nineRouterEnvApiKey() : "";
+}
 
 export interface CloudTranscribeConfig {
   provider: CloudProviderId;

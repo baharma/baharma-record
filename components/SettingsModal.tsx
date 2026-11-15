@@ -6,9 +6,11 @@ import {
   CLOUD_BASE_URL_STORAGE_KEY,
   CLOUD_PROVIDER_STORAGE_KEY,
   CLOUD_PROVIDERS,
+  NINE_ROUTER_BASE_URL_STORAGE_KEY,
   cloudApiKeyStorageKey,
   cloudModelStorageKey,
   cloudProvider,
+  nineRouterEnvApiKey,
   type CloudProviderId,
 } from "@/lib/transcription/cloudProviders";
 import DeepgramKeysField from "./DeepgramKeysField";
@@ -47,6 +49,12 @@ export function SettingsModal({ onClose }: Props) {
   });
   const [customBaseUrl, setCustomBaseUrl] = useState(
     () => readLocalStorage(CLOUD_BASE_URL_STORAGE_KEY) ?? "",
+  );
+  // 9Router's gateway origin override — empty means "fall back to
+  // NEXT_PUBLIC_9ROUTER_BASE_URL, else the default local gateway"; the raw
+  // saved text is shown/edited, normalization happens at request time.
+  const [nineRouterOrigin, setNineRouterOrigin] = useState(
+    () => readLocalStorage(NINE_ROUTER_BASE_URL_STORAGE_KEY) ?? "",
   );
 
   // Each provider remembers its own key/model — same render-time-adjustment
@@ -126,9 +134,18 @@ export function SettingsModal({ onClose }: Props) {
                 setCloudApiKey(event.target.value);
                 writeLocalStorage(cloudApiKeyStorageKey(cloudProviderId), event.target.value);
               }}
-              placeholder="API key"
+              placeholder={
+                cloudProviderId === "9router" && nineRouterEnvApiKey()
+                  ? "API key (from env)"
+                  : "API key"
+              }
               autoComplete="off"
               className="min-w-32 flex-1 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+              title={
+                cloudProviderId === "9router"
+                  ? "Left empty, NEXT_PUBLIC_9ROUTER_API_KEY (build-time env) is used instead"
+                  : undefined
+              }
             />
           </div>
           {cloudProviderId === "custom" && (
@@ -142,6 +159,19 @@ export function SettingsModal({ onClose }: Props) {
               placeholder="https://.../v1"
               className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
               title="Base URL of a provider with its own /audio/transcriptions (speech-to-text) endpoint, without that trailing path — a chat/completions-only API (e.g. most agentic coding gateways) won't work here"
+            />
+          )}
+          {cloudProviderId === "9router" && (
+            <input
+              type="text"
+              value={nineRouterOrigin}
+              onChange={(event) => {
+                setNineRouterOrigin(event.target.value);
+                writeLocalStorage(NINE_ROUTER_BASE_URL_STORAGE_KEY, event.target.value);
+              }}
+              placeholder="http://127.0.0.1:20128"
+              className="mt-2 w-full rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700"
+              title="Origin of your 9Router gateway (github.com/decolua/9router) — /v1 is appended automatically if missing. Empty uses NEXT_PUBLIC_9ROUTER_BASE_URL, else the default locally-running gateway at http://127.0.0.1:20128. The model id below must match the STT provider configured inside your gateway."
             />
           )}
           <input

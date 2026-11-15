@@ -11,9 +11,13 @@ import {
   CLOUD_BASE_URL_STORAGE_KEY,
   CLOUD_PROVIDER_STORAGE_KEY,
   CLOUD_PROVIDERS,
+  NINE_ROUTER_BASE_URL_STORAGE_KEY,
   cloudApiKeyStorageKey,
   cloudModelStorageKey,
   cloudProvider,
+  effectiveCloudApiKey,
+  nineRouterBaseUrl,
+  nineRouterEnvApiKey,
   type CloudProviderId,
   type TranscribeEngineRequest,
 } from "@/lib/transcription/cloudProviders";
@@ -119,6 +123,13 @@ export function TranscriptPanel({
   const [customBaseUrl, setCustomBaseUrl] = useState(
     () => readLocalStorage(CLOUD_BASE_URL_STORAGE_KEY) ?? "",
   );
+  // 9Router's gateway origin override — empty means "fall back to
+  // NEXT_PUBLIC_9ROUTER_BASE_URL, else the default local gateway" (see
+  // nineRouterBaseUrl). The raw saved text is what's shown/edited here;
+  // normalization to ".../v1" happens at request time.
+  const [nineRouterOrigin, setNineRouterOrigin] = useState(
+    () => readLocalStorage(NINE_ROUTER_BASE_URL_STORAGE_KEY) ?? "",
+  );
   const [cloudModel, setCloudModel] = useState(() => {
     const saved = readLocalStorage(cloudModelStorageKey(cloudProviderId));
     return saved && saved.length > 0 ? saved : cloudProvider(cloudProviderId).defaultModel;
@@ -138,7 +149,7 @@ export function TranscriptPanel({
 
   const cloudReady =
     engine !== "cloud" ||
-    (apiKey.trim().length > 0 &&
+    (effectiveCloudApiKey(cloudProviderId, apiKey).trim().length > 0 &&
       cloudModel.trim().length > 0 &&
       (cloudProviderId !== "custom" || customBaseUrl.trim().length > 0));
 
@@ -517,10 +528,14 @@ export function TranscriptPanel({
                     writeLocalStorage(cloudApiKeyStorageKey(cloudProviderId), event.target.value);
                   }}
                   disabled={isTranscribing || transcriberBusyElsewhere}
-                  placeholder="API key"
+                  placeholder={
+                    cloudProviderId === "9router" && nineRouterEnvApiKey()
+                      ? "API key (from env)"
+                      : "API key"
+                  }
                   autoComplete="off"
                   className="w-32 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
-                  title="Stored only in this browser (localStorage) and sent directly to the provider — this app has no backend to hold it instead"
+                  title="Stored only in this browser (localStorage) and sent directly to the provider — this app has no backend to hold it instead. For 9Router, NEXT_PUBLIC_9ROUTER_API_KEY is used when this is left empty."
                 />
                 {cloudProviderId === "custom" && (
                   <input
@@ -534,6 +549,20 @@ export function TranscriptPanel({
                     placeholder="https://.../v1"
                     className="w-40 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
                     title="Base URL of a provider with its own /audio/transcriptions (speech-to-text) endpoint, without that trailing path — a chat/completions-only API (e.g. most agentic coding gateways) won't work here"
+                  />
+                )}
+                {cloudProviderId === "9router" && (
+                  <input
+                    type="text"
+                    value={nineRouterOrigin}
+                    onChange={(event) => {
+                      setNineRouterOrigin(event.target.value);
+                      writeLocalStorage(NINE_ROUTER_BASE_URL_STORAGE_KEY, event.target.value);
+                    }}
+                    disabled={isTranscribing || transcriberBusyElsewhere}
+                    placeholder="http://127.0.0.1:20128"
+                    className="w-40 rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm disabled:opacity-50 dark:border-zinc-700"
+                    title="Origin of your 9Router gateway — /v1 is appended automatically if missing. Empty uses NEXT_PUBLIC_9ROUTER_BASE_URL, else the default locally-running gateway at http://127.0.0.1:20128."
                   />
                 )}
                 <input
@@ -562,8 +591,10 @@ export function TranscriptPanel({
                           baseUrl:
                             cloudProviderId === "custom"
                               ? customBaseUrl.trim()
-                              : cloudProvider(cloudProviderId).baseUrl,
-                          apiKey: apiKey.trim(),
+                              : cloudProviderId === "9router"
+                                ? nineRouterBaseUrl(nineRouterOrigin)
+                                : cloudProvider(cloudProviderId).baseUrl,
+                          apiKey: effectiveCloudApiKey(cloudProviderId, apiKey),
                           model: cloudModel.trim(),
                         },
                       };
